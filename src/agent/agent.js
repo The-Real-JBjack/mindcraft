@@ -317,15 +317,17 @@ export class Agent {
                 if (checkInterrupt()) break;
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
-                if (settings.verbose_commands) {
-                    this.routeResponse(source, res);
-                }
-                else { // only output command name
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    let chat_message = `*used ${command_name.substring(1)}*`;
-                    if (pre_message.length > 0)
-                        chat_message = `${pre_message}  ${chat_message}`;
-                    this.routeResponse(source, chat_message);
+                if (source !== this.name) {
+                    if (settings.verbose_commands) {
+                        this.routeResponse(source, res);
+                    }
+                    else { // only output command name
+                        let pre_message = res.substring(0, res.indexOf(command_name)).trim();
+                        let chat_message = `*used ${command_name.substring(1)}*`;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
                 }
 
                 let execute_res = await executeCommand(this, res);

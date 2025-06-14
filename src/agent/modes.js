@@ -6,8 +6,6 @@ import convoManager from './conversation.js';
 
 async function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
-    if (agent.shut_up || !settings.narrate_behavior) return;
-    agent.openChat(message);
 }
 
 // a mode is a function that is called every tick to respond immediately to the world
@@ -117,6 +115,23 @@ const modes_list = [
         }
     },
     {
+        name: 'self_defense',
+        description: 'Attack nearby enemies. Interrupts all actions.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        update: async function (agent) {
+            const recentlyDamaged = (Date.now() - agent.bot.lastDamageTime) < 5000; // 5 seconds
+            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 8);
+            if (recentlyDamaged && enemy && await world.isClearPath(agent.bot, enemy)) {
+                say(agent, `Fighting ${enemy.name}!`);
+                execute(this, agent, async () => {
+                    await skills.defendSelf(agent.bot, 8);
+                });
+            }
+        }
+    },
+    {
         name: 'cowardice',
         description: 'Run away from enemies. Interrupts all actions.',
         interrupts: ['all'],
@@ -128,22 +143,6 @@ const modes_list = [
                 say(agent, `Aaa! A ${enemy.name.replace("_", " ")}!`);
                 execute(this, agent, async () => {
                     await skills.avoidEnemies(agent.bot, 24);
-                });
-            }
-        }
-    },
-    {
-        name: 'self_defense',
-        description: 'Attack nearby enemies. Interrupts all actions.',
-        interrupts: ['all'],
-        on: true,
-        active: false,
-        update: async function (agent) {
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 8);
-            if (enemy && await world.isClearPath(agent.bot, enemy)) {
-                say(agent, `Fighting ${enemy.name}!`);
-                execute(this, agent, async () => {
-                    await skills.defendSelf(agent.bot, 8);
                 });
             }
         }
