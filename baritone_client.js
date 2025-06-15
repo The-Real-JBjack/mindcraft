@@ -19,18 +19,32 @@ const axios = {
             body: JSON.stringify(data),
         });
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP error ${response.status}: ${errorText}`);
+            let errorData;
+            try {
+                errorData = await response.json();
+            } catch (e) {
+                // If parsing error response as JSON fails, use the raw text
+                const errorText = await response.text();
+                throw new Error(`Baritone API error ${response.status}: ${errorText}`);
+            }
+            throw new Error(`Baritone API error ${response.status}: ${errorData.message || JSON.stringify(errorData)}`);
         }
-        return response.json(); // Assuming JSON responses
+        return response.json(); // Assuming JSON responses, Baritone should send { message: "...", ... }
     },
     get: async (url) => {
         const response = await fetch(url, {
             method: 'GET',
         });
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP error ${response.status}: ${errorText}`);
+            let errorData;
+            try {
+                errorData = await response.json();
+            } catch (e) {
+                // If parsing error response as JSON fails, use the raw text
+                const errorText = await response.text();
+                throw new Error(`Baritone API error ${response.status}: ${errorText}`);
+            }
+            throw new Error(`Baritone API error ${response.status}: ${errorData.message || JSON.stringify(errorData)}`);
         }
         return response.json(); // Assuming JSON responses
     }

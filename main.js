@@ -37,9 +37,10 @@ async function main() {
 
     const args = parseArguments();
     const profiles = getProfiles(args);
-    console.log(profiles);
+    console.log('Profiles to load:', profiles);
     const { load_memory, init_message } = settings;
 
+    console.log(`Attempting to start ${profiles.length} bot(s) based on the profiles array.`);
     for (let i=0; i<profiles.length; i++) {
         const agent_process = new AgentProcess();
         const profile = readFileSync(profiles[i], 'utf8');

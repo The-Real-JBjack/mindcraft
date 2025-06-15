@@ -140,15 +140,28 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, x, y, z, closeness) => {
             // closeness is not directly used by our current baritoneClient.goTo, but Baritone might have its own setting.
-            // For now, we'll just pass x, y, z.
-            // The original skills.goToPosition might have more nuanced logic for "closeness".
-            // We assume Baritone handles getting "close enough".
+            // closeness is not directly used by our current baritoneClient.goTo, but Baritone might have its own setting.
             skills.log(agent.bot, `Action: goToCoordinates ${x}, ${y}, ${z} (closeness: ${closeness}) using Baritone.`);
-            await baritoneClient.goTo(x, y, z);
-            // Success/failure is implicitly handled by baritoneClient throwing an error or not.
-            // ActionManager will catch errors and report them.
-            // We can add explicit success logging if needed, e.g. by checking response from baritoneClient.goTo if it returns useful status.
-            skills.log(agent.bot, `Baritone goTo(${x}, ${y}, ${z}) command issued.`);
+            try {
+                const response = await baritoneClient.goTo(x, y, z);
+                // Assuming 'response' from baritoneClient.goTo is the parsed JSON object
+                // If Baritone sends a specific success message, we can use it. e.g. response.message
+                let successMessage = `Baritone reports: Successfully initiated navigation to (${x}, ${y}, ${z}).`;
+                if (response && response.message) {
+                    successMessage = `Baritone reports: "${response.message}" for navigation to (${x}, ${y}, ${z}).`;
+                } else if (response && response.status) { // Fallback if no message but status exists
+                    successMessage = `Baritone status "${response.status}" for navigation to (${x}, ${y}, ${z}).`;
+                }
+                skills.log(agent.bot, successMessage);
+                return successMessage; // This message will be returned by runAsAction
+            } catch (error) {
+                skills.log(agent.bot, `Baritone navigation to (${x}, ${y}, ${z}) failed: ${error.message}`);
+                // The error will be caught by ActionManager and reported.
+                // We can also return a specific failure message string if preferred,
+                // but throwing the error provides more detail to ActionManager.
+                // To ensure a custom message is part of the agent's history via runAsAction:
+                throw new Error(`Baritone navigation to (${x}, ${y}, ${z}) failed: ${error.message}`);
+            }
         })
     },
     {

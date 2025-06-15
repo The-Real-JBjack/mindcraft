@@ -102,6 +102,16 @@ When running in docker, if you want the bot to join your local minecraft server,
 
 To connect to an unsupported minecraft version, you can try to use [viaproxy](services/viaproxy/README.md)
 
+## Baritone Setup (for advanced navigation and actions)
+The bot uses Baritone for many navigation and interaction commands via an HTTP API.
+It's assumed that you have Baritone installed or can obtain it. You can typically find the official Baritone project on GitHub.
+A Baritone instance compatible with the bot's `baritone_client.js` (which expects an HTTP server on `http://localhost:4567/api/baritone`) must be running.
+The repository includes `libs/baritone-api.jar`, which likely needs to be run to provide this API.
+A conceptual command to run such a JAR would be:
+`java -jar libs/baritone-api.jar`
+Note: This command is conceptual and might need adjustments based on the JAR's specific requirements (e.g., Minecraft version, Forge/Fabric loader).
+This Baritone process must be started *before* or *concurrently with* the agent bot.
+
 # Bot Profiles
 
 Bot profiles are json files (such as `andy.json`) that define:
