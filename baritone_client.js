@@ -190,9 +190,25 @@ async function lookAt(x, y, z) {
     }
 }
 
-// Export the functions to be used by other modules (e.g., ActionManager)
-// Using CommonJS module exports for typical Node.js environment
-module.exports = {
+// Example usage (for testing this module independently):
+/*
+async function testClient() {
+    try {
+        // console.log("Testing goTo(10, 20, 30)...");
+        // const gotoRes = await goTo(10, 20, 30);
+        // console.log("goTo response:", gotoRes);
+
+        // console.log("\nTesting stop()...");
+        // const stopRes = await stop();
+        // console.log("stop response:", stopRes);
+
+        // Add more tests as needed
+    } catch (e) {
+        console.error("Test failed:", e);
+    }
+}
+
+export {
     goTo,
     stop,
     mineBlock,
@@ -211,24 +227,6 @@ module.exports = {
     getNearbyEntities,
     getNearbyItems,
 };
-
-// Example usage (for testing this module independently):
-/*
-async function testClient() {
-    try {
-        // console.log("Testing goTo(10, 20, 30)...");
-        // const gotoRes = await goTo(10, 20, 30);
-        // console.log("goTo response:", gotoRes);
-
-        // console.log("\nTesting stop()...");
-        // const stopRes = await stop();
-        // console.log("stop response:", stopRes);
-
-        // Add more tests as needed
-    } catch (e) {
-        console.error("Test failed:", e);
-    }
-}
 
 // To run testClient, you would typically execute this file with Node.js
 // testClient();

@@ -1,5 +1,5 @@
 import * as skills from '../library/skills.js';
-const baritoneClient = require('../../baritone_client.js'); // Added Baritone client
+import * as baritoneClient from '../../baritone_client.js'; // Added Baritone client
 import settings from '../../../settings.js';
 import convoManager from '../conversation.js';
 
