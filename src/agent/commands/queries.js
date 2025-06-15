@@ -1,4 +1,5 @@
-import * as world from '../library/world.js';
+import * as world from '../library/world.js'; // Will be partially replaced
+const baritoneClient = require('../../baritone_client.js'); // Added Baritone client
 import * as mc from '../../utils/mcdata.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
@@ -68,57 +69,75 @@ export const queryList = [
     {
         name: "!inventory",
         description: "Get your bot's inventory.",
-        perform: function (agent) {
-            let bot = agent.bot;
-            let inventory = world.getInventoryCounts(bot);
+        perform: async function (agent) { // Made async
             let res = 'INVENTORY';
-            for (const item in inventory) {
-                if (inventory[item] && inventory[item] > 0)
-                    res += `\n- ${item}: ${inventory[item]}`;
-            }
-            if (res === 'INVENTORY') {
-                res += ': Nothing';
-            }
-            else if (agent.bot.game.gameMode === 'creative') {
-                res += '\n(You have infinite items in creative mode. You do not need to gather resources!!)';
-            }
+            try {
+                const inventoryResponse = await baritoneClient.getInventory();
+                if (inventoryResponse && inventoryResponse.data && inventoryResponse.data.length > 0) {
+                    for (const item of inventoryResponse.data) {
+                        res += `\n- ${item.name}: ${item.quantity}`;
+                    }
+                } else {
+                    res += ': Nothing';
+                }
 
-            let helmet = bot.inventory.slots[5];
-            let chestplate = bot.inventory.slots[6];
-            let leggings = bot.inventory.slots[7];
-            let boots = bot.inventory.slots[8];
-            res += '\nWEARING: ';
-            if (helmet)
-                res += `\nHead: ${helmet.name}`;
-            if (chestplate)
-                res += `\nTorso: ${chestplate.name}`;
-            if (leggings)
-                res += `\nLegs: ${leggings.name}`;
-            if (boots)
-                res += `\nFeet: ${boots.name}`;
-            if (!helmet && !chestplate && !leggings && !boots)
-                res += 'Nothing';
+                if (agent.bot.game.gameMode === 'creative') { // This part can remain as it's bot specific game mode
+                    res += '\n(You have infinite items in creative mode. You do not need to gather resources!!)';
+                }
 
+                // Get selected item
+                const selectedItemResponse = await baritoneClient.getSelectedItem();
+                if (selectedItemResponse && selectedItemResponse.data && selectedItemResponse.data.name) {
+                    res += `\nSELECTED_ITEM: ${selectedItemResponse.data.name} (qty: ${selectedItemResponse.data.quantity})`;
+                } else {
+                    res += `\nSELECTED_ITEM: Nothing selected or unable to determine.`;
+                }
+
+                // Wearing armor - this still needs mineflayer or equivalent direct mc data access
+                // For now, let's comment it out or acknowledge it might be stale if Baritone is fully independent
+                let bot = agent.bot;
+                let helmet = bot.inventory.slots[5];
+                let chestplate = bot.inventory.slots[6];
+                let leggings = bot.inventory.slots[7];
+                let boots = bot.inventory.slots[8];
+                res += '\nWEARING (Note: This info might be from a separate source than Baritone): ';
+                if (helmet) res += `\nHead: ${helmet.name}`;
+                if (chestplate) res += `\nTorso: ${chestplate.name}`;
+                if (leggings) res += `\nLegs: ${leggings.name}`;
+                if (boots) res += `\nFeet: ${boots.name}`;
+                if (!helmet && !chestplate && !leggings && !boots) res += 'Nothing';
+
+            } catch (e) {
+                console.error("Error fetching inventory from Baritone:", e);
+                res += `\nError fetching inventory: ${e.message}`;
+            }
             return pad(res);
         }
     },
     {
         name: "!nearbyBlocks",
-        description: "Get the blocks near the bot.",
-        perform: function (agent) {
-            let bot = agent.bot;
+        description: "Get the blocks near the bot within a specified radius (default 10).",
+        params: {
+            'radius': { type: 'int', description: 'The radius to search within.', optional: true, default: 10, domain: [1, 32] }
+        },
+        perform: async function (agent, radius = 10) { // Made async
             let res = 'NEARBY_BLOCKS';
-            let blocks = world.getNearbyBlockTypes(bot);
-            for (let i = 0; i < blocks.length; i++) {
-                res += `\n- ${blocks[i]}`;
-            }
-            if (blocks.length == 0) {
-                res += ': none';
-            } 
-            else {
-                // Environmental Awareness
-                res += '\n- ' + world.getSurroundingBlocks(bot).join('\n- ')
-                res += `\n- First Solid Block Above Head: ${world.getFirstBlockAboveHead(bot, null, 32)}`;
+            try {
+                const blocksResponse = await baritoneClient.getNearbyBlocks(radius);
+                if (blocksResponse && blocksResponse.data && blocksResponse.data.length > 0) {
+                    for (const block of blocksResponse.data) {
+                        res += `\n- ${block.type} at x:${block.x.toFixed(1)}, y:${block.y.toFixed(1)}, z:${block.z.toFixed(1)}`;
+                    }
+                } else {
+                    res += ': none found within radius ' + radius;
+                }
+                // The old "Environmental Awareness" might be redundant if Baritone provides comprehensive data
+                // For now, we comment it out. It could be re-added if needed.
+                // res += '\n- ' + world.getSurroundingBlocks(agent.bot).join('\n- ')
+                // res += `\n- First Solid Block Above Head: ${world.getFirstBlockAboveHead(agent.bot, null, 32)}`;
+            } catch (e) {
+                console.error("Error fetching nearby blocks from Baritone:", e);
+                res += `\nError fetching nearby blocks: ${e.message}`;
             }
             return pad(res);
         }
@@ -140,28 +159,48 @@ export const queryList = [
     },
     {
         name: "!entities",
-        description: "Get the nearby players and entities.",
-        perform: function (agent) {
-            let bot = agent.bot;
+        description: "Get nearby entities within a specified radius (default 10).",
+        params: {
+            'radius': { type: 'int', description: 'The radius to search within.', optional: true, default: 10, domain: [1, 32] }
+        },
+        perform: async function (agent, radius = 10) { // Made async
             let res = 'NEARBY_ENTITIES';
-            let players = world.getNearbyPlayerNames(bot);
-            let bots = convoManager.getInGameAgents().filter(b => b !== agent.name);
-            players = players.filter(p => !bots.includes(p));
-
-            for (const player of players) {
-                res += `\n- Human player: ${player}`;
+            try {
+                const entitiesResponse = await baritoneClient.getNearbyEntities(radius);
+                if (entitiesResponse && entitiesResponse.data && entitiesResponse.data.length > 0) {
+                    for (const entity of entitiesResponse.data) {
+                        res += `\n- ${entity.type} (ID: ${entity.id}) at x:${entity.x.toFixed(1)}, y:${entity.y.toFixed(1)}, z:${entity.z.toFixed(1)}`;
+                    }
+                } else {
+                    res += ': none found within radius ' + radius;
+                }
+            } catch (e) {
+                console.error("Error fetching nearby entities from Baritone:", e);
+                res += `\nError fetching nearby entities: ${e.message}`;
             }
-            for (const bot of bots) {
-                res += `\n- Bot player: ${bot}`;
-            }
-
-            for (const entity of world.getNearbyEntityTypes(bot)) {
-                if (entity === 'player' || entity === 'item')
-                    continue;
-                res += `\n- entities: ${entity}`;
-            }
-            if (res == 'NEARBY_ENTITIES') {
-                res += ': none';
+            return pad(res);
+        }
+    },
+    {
+        name: "!nearbyItems",
+        description: "Get nearby dropped items within a specified radius (default 10).",
+        params: {
+            'radius': { type: 'int', description: 'The radius to search within.', optional: true, default: 10, domain: [1, 32] }
+        },
+        perform: async function (agent, radius = 10) { // Made async
+            let res = 'NEARBY_DROPPED_ITEMS';
+            try {
+                const itemsResponse = await baritoneClient.getNearbyItems(radius);
+                if (itemsResponse && itemsResponse.data && itemsResponse.data.length > 0) {
+                    for (const item of itemsResponse.data) {
+                        res += `\n- ${item.itemType} (qty: ${item.quantity}) at x:${item.x.toFixed(1)}, y:${item.y.toFixed(1)}, z:${item.z.toFixed(1)}`;
+                    }
+                } else {
+                    res += ': none found within radius ' + radius;
+                }
+            } catch (e) {
+                console.error("Error fetching nearby items from Baritone:", e);
+                res += `\nError fetching nearby items: ${e.message}`;
             }
             return pad(res);
         }

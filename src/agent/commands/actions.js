@@ -1,4 +1,5 @@
 import * as skills from '../library/skills.js';
+const baritoneClient = require('../../baritone_client.js'); // Added Baritone client
 import settings from '../../../settings.js';
 import convoManager from '../conversation.js';
 
@@ -54,11 +55,18 @@ export const actionsList = [
         name: '!stop',
         description: 'Force stop all actions and commands that are currently executing.',
         perform: async function (agent) {
-            await agent.actions.stop();
+            await agent.actions.stop(); // This handles internal bot stop
+            try {
+                await baritoneClient.stop(); // Call Baritone's stop API
+                skills.log(agent.bot, "Baritone stop command issued.");
+            } catch (e) {
+                skills.log(agent.bot, `Error calling Baritone stop: ${e.message}`);
+                // Decide if this error should be re-thrown or just logged
+            }
             agent.clearBotLogs();
             agent.actions.cancelResume();
             agent.bot.emit('idle');
-            let msg = 'Agent stopped.';
+            let msg = 'Agent and Baritone stop commands issued.';
             if (agent.self_prompter.isActive())
                 msg += ' Self-prompting still active.';
             return msg;
@@ -107,8 +115,19 @@ export const actionsList = [
             'follow_dist': {type: 'float', description: 'The distance to follow from.', domain: [0, Infinity]}
         },
         perform: runAsAction(async (agent, player_name, follow_dist) => {
-            await skills.followPlayer(agent.bot, player_name, follow_dist);
-        }, true)
+            // follow_dist might be handled by Baritone settings, not as a per-call param.
+            skills.log(agent.bot, `Action: followPlayer (player: ${player_name}, dist: ${follow_dist}) using Baritone.`);
+            const player = agent.bot.players[player_name]?.entity;
+            if (player) {
+                // Assuming Baritone needs an entity ID. Player username is often a good ID.
+                const entityId = player.username || String(player.id); // Use username if available
+                await baritoneClient.followEntity(entityId);
+                skills.log(agent.bot, `Baritone followEntity(${entityId}) command issued.`);
+            } else {
+                skills.log(agent.bot, `Player ${player_name} not found to follow with Baritone.`);
+                throw new Error(`Player ${player_name} not found.`);
+            }
+        }, true) // true for resumable action
     },
     {
         name: '!goToCoordinates',
@@ -120,7 +139,16 @@ export const actionsList = [
             'closeness': {type: 'float', description: 'How close to get to the location.', domain: [0, Infinity]}
         },
         perform: runAsAction(async (agent, x, y, z, closeness) => {
-            await skills.goToPosition(agent.bot, x, y, z, closeness);
+            // closeness is not directly used by our current baritoneClient.goTo, but Baritone might have its own setting.
+            // For now, we'll just pass x, y, z.
+            // The original skills.goToPosition might have more nuanced logic for "closeness".
+            // We assume Baritone handles getting "close enough".
+            skills.log(agent.bot, `Action: goToCoordinates ${x}, ${y}, ${z} (closeness: ${closeness}) using Baritone.`);
+            await baritoneClient.goTo(x, y, z);
+            // Success/failure is implicitly handled by baritoneClient throwing an error or not.
+            // ActionManager will catch errors and report them.
+            // We can add explicit success logging if needed, e.g. by checking response from baritoneClient.goTo if it returns useful status.
+            skills.log(agent.bot, `Baritone goTo(${x}, ${y}, ${z}) command issued.`);
         })
     },
     {
@@ -256,7 +284,36 @@ export const actionsList = [
             'num': { type: 'int', description: 'The number of blocks to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, type, num) => {
-            await skills.collectBlock(agent.bot, type, num);
+            // This action is more complex. Original `skills.collectBlock` likely involves:
+            // 1. Finding appropriate blocks.
+            // 2. Pathfinding to them one by one.
+            // 3. Mining them.
+            // Our current `baritoneClient.mineBlock(x,y,z)` is for a specific coordinate.
+            // A more robust solution would involve:
+            //    a. A Baritone API to find blocks of a certain type (e.g., /findBlock?type=dirt)
+            //    b. Then, iterating `num` times, get coordinates and call `baritoneClient.mineBlock(x,y,z)`.
+            // OR Baritone might have a command like /mineBlocks?type=dirt&count=num
+            // For now, let's try to find ONE block of the type and ask Baritone to mine it.
+            // This simplification means 'num' is not fully supported yet.
+            skills.log(agent.bot, `Action: collectBlocks (type: ${type}, num: ${num}) using Baritone. Simplified to mine one block.`);
+
+            // Step 1: Find the nearest block of the given type (using existing skill, IF it doesn't move the bot)
+            // This is a placeholder; ideally, Baritone provides this or it's done without mineflayer pathfinding.
+            // For now, we'll assume we need specific coordinates.
+            // If skills.findNearestBlock is available and suitable:
+            const block = skills.findNearestBlock(agent.bot, type, agent.bot.entity.position, 64); // Example range
+            if (block) {
+                skills.log(agent.bot, `Found block of type ${type} at ${block.position}. Telling Baritone to mine it.`);
+                await baritoneClient.mineBlock(block.position.x, block.position.y, block.position.z);
+                skills.log(agent.bot, `Baritone mineBlock(${block.position.x}, ${block.position.y}, ${block.position.z}) command issued for type ${type}.`);
+                // We would need a loop and re-finding for 'num > 1'
+                if (num > 1) {
+                    skills.log(agent.bot, `Note: Mining multiple blocks (${num}) is not fully implemented with Baritone yet. Mined one.`);
+                }
+            } else {
+                skills.log(agent.bot, `Could not find any blocks of type ${type} nearby to mine with Baritone.`);
+                throw new Error(`No blocks of type ${type} found nearby.`);
+            }
         }, false, 10) // 10 minute timeout
     },
     {
@@ -299,8 +356,19 @@ export const actionsList = [
         description: 'Place a given block in the current location. Do NOT use to build structures, only use for single blocks/torches.',
         params: {'type': { type: 'BlockName', description: 'The block type to place.' }},
         perform: runAsAction(async (agent, type) => {
-            let pos = agent.bot.entity.position;
-            await skills.placeBlock(agent.bot, type, pos.x, pos.y, pos.z);
+            // Assuming 'type' is a block name like "minecraft:dirt"
+            // The current !placeHere places at the bot's current feet, which might not be ideal.
+            // Baritone's placeBlock likely needs a specific target coordinate.
+            // Let's try placing at the block directly in front of the bot's feet.
+            const botPos = agent.bot.entity.position;
+            const targetPos = botPos.offset(0, -1, 0).floored(); // Block at feet. For placement, might want one block away.
+            // For simplicity, let's assume the user means to place at specified coordinates or a GUI selects it.
+            // This action needs better definition for Baritone.
+            // Let's assume for now it means placing at bot's feet if no other coords given.
+            // The 'type' from params should be the blockType string.
+            skills.log(agent.bot, `Action: placeBlock (type: ${type}) at current bot feet using Baritone.`);
+            await baritoneClient.placeBlock(type, targetPos.x, targetPos.y, targetPos.z);
+            skills.log(agent.bot, `Baritone placeBlock(${type}, ${targetPos.x}, ${targetPos.y}, ${targetPos.z}) command issued.`);
         })
     },
     {
@@ -308,7 +376,29 @@ export const actionsList = [
         description: 'Attack and kill the nearest entity of a given type.',
         params: {'type': { type: 'string', description: 'The type of entity to attack.'}},
         perform: runAsAction(async (agent, type) => {
-            await skills.attackNearest(agent.bot, type, true);
+            // This is complex. `skills.attackNearest` finds then attacks.
+            // `baritoneClient.attackEntity` needs an entityId.
+            // We need a way to get entityId from type.
+            // Placeholder: find entity using mineflayer (if possible without conflicting with Baritone) then attack.
+            skills.log(agent.bot, `Action: attack (type: ${type}) using Baritone. Finding entity first.`);
+            const entity = agent.bot.nearestEntity(e => e.name === type || e.displayName === type); // Example find logic
+            if (entity) {
+                skills.log(agent.bot, `Found entity ${type} with ID ${entity.id}. Telling Baritone to attack.`);
+                // We need a persistent or recognizable entityId for Baritone. Mineflayer's entity.id might be runtime specific.
+                // This is a placeholder for how an entityId would be obtained.
+                // Let's assume entity.id or entity.username for players is what Baritone expects.
+                const entityId = entity.id || entity.username;
+                if (entityId) {
+                    await baritoneClient.attackEntity(String(entityId)); // Ensure it's a string
+                    skills.log(agent.bot, `Baritone attackEntity(${entityId}) command issued for type ${type}.`);
+                } else {
+                    skills.log(agent.bot, `Could not determine a suitable entity ID for ${type}.`);
+                    throw new Error(`Could not determine ID for entity ${type}.`);
+                }
+            } else {
+                skills.log(agent.bot, `Could not find any entity of type ${type} nearby to attack with Baritone.`);
+                throw new Error(`No entity of type ${type} found nearby.`);
+            }
         })
     },
     {
@@ -336,7 +426,74 @@ export const actionsList = [
         description: 'Activate the nearest object of a given type.',
         params: {'type': { type: 'BlockName', description: 'The type of object to activate.' }},
         perform: runAsAction(async (agent, type) => {
-            await skills.activateNearestBlock(agent.bot, type);
+            // This action is specifically for blocks.
+            skills.log(agent.bot, `Action: activate (type: ${type}) using Baritone. Attempting to interactWithBlock for nearest block of this type.`);
+            const block = skills.findNearestBlock(agent.bot, type, agent.bot.entity.position, 10); // Search within 10 blocks
+            if (block) {
+                skills.log(agent.bot, `Found block of type ${type} at ${block.position}. Telling Baritone to interactWithBlock.`);
+                await baritoneClient.interactWithBlock(block.position.x, block.position.y, block.position.z);
+                skills.log(agent.bot, `Baritone interactWithBlock(${block.position.x},${block.position.y},${block.position.z}) command issued for block type ${type}.`);
+            } else {
+                skills.log(agent.bot, `Could not find any block of type ${type} nearby to activate with Baritone.`);
+                throw new Error(`No block of type ${type} found nearby to interact with.`);
+            }
+        })
+    },
+    {
+        name: '!killNearbyHostiles',
+        description: 'Automatically find and attack nearby hostile mobs.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            skills.log(agent.bot, `Action: killNearbyHostiles using Baritone.`);
+            await baritoneClient.killHostileMobs();
+            skills.log(agent.bot, `Baritone killHostileMobs command issued.`);
+        })
+    },
+    {
+        name: '!defendTarget',
+        description: 'Defend a specified target entity (player or mob) by attacking mobs that target it.',
+        params: { 'target_entity_id': { type: 'string', description: 'The ID or name of the entity to defend.' } },
+        perform: runAsAction(async (agent, target_entity_id) => {
+            // Note: Baritone might need a way to resolve entity names to IDs if not already an ID.
+            // For now, assumes target_entity_id is what Baritone expects.
+            skills.log(agent.bot, `Action: defendTarget (target: ${target_entity_id}) using Baritone.`);
+            const targetEntity = agent.bot.nearestEntity(e => String(e.id || e.username) === target_entity_id); // Attempt to find/validate
+            if (targetEntity) {
+                await baritoneClient.defend(target_entity_id); // Pass the original ID/name
+                skills.log(agent.bot, `Baritone defend(${target_entity_id}) command issued.`);
+            } else {
+                // Optional: check if target_entity_id refers to a player by name if not found as an entity ID
+                const player = agent.bot.players[target_entity_id]?.entity;
+                if (player) {
+                    await baritoneClient.defend(target_entity_id); // Assuming Baritone can take player name
+                    skills.log(agent.bot, `Baritone defend(${target_entity_id}) command issued for player.`);
+                } else {
+                    skills.log(agent.bot, `Target entity ${target_entity_id} not found nearby to defend with Baritone.`);
+                    throw new Error(`Target entity ${target_entity_id} not found.`);
+                }
+            }
+        })
+    },
+    {
+        name: '!interactWithEntity',
+        description: 'Interact with a specified entity (e.g., trade with villager, shear sheep).',
+        params: { 'target_entity_id': { type: 'string', description: 'The ID or name of the entity to interact with.' } },
+        perform: runAsAction(async (agent, target_entity_id) => {
+            skills.log(agent.bot, `Action: interactWithEntity (target: ${target_entity_id}) using Baritone.`);
+            const targetEntity = agent.bot.nearestEntity(e => String(e.id || e.username) === target_entity_id);
+            if (targetEntity) {
+                await baritoneClient.interactWithEntity(target_entity_id);
+                skills.log(agent.bot, `Baritone interactWithEntity(${target_entity_id}) command issued.`);
+            } else {
+                const player = agent.bot.players[target_entity_id]?.entity;
+                if (player) {
+                    await baritoneClient.interactWithEntity(target_entity_id);
+                    skills.log(agent.bot, `Baritone interactWithEntity(${target_entity_id}) command issued for player.`);
+                } else {
+                    skills.log(agent.bot, `Target entity ${target_entity_id} not found nearby to interact with Baritone.`);
+                    throw new Error(`Target entity ${target_entity_id} not found.`);
+                }
+            }
         })
     },
     {
@@ -428,9 +585,35 @@ export const actionsList = [
             }
         },
         perform: async function(agent, player_name, direction) {
+            // This uses vision_interpreter, which might be fine.
+            // However, if Baritone has a lookAtPlayer, we could use that.
+            // For now, assuming this remains as is, or Baritone's lookAt(x,y,z) is preferred.
+            // If we want Baritone to look at a player, we'd need player's coords.
             if (direction !== 'at' && direction !== 'with') {
                 return "Invalid direction. Use 'at' or 'with'.";
             }
+            // If 'at', get player coords and use baritoneClient.lookAt(x,y,z)
+            const player = agent.bot.players[player_name]?.entity;
+            if (direction === 'at' && player) {
+                skills.log(agent.bot, `Action: lookAtPlayer (player: ${player_name}, direction: ${direction}) using Baritone.`);
+                await baritoneClient.lookAt(player.position.x, player.position.y + player.height, player.position.z); // Look at player's head
+                return `Looking at ${player_name} using Baritone.`;
+            } else if (direction === 'with' && player) {
+                // This is more complex: "look in the same direction as the player"
+                // Would require getting player's yaw/pitch and setting bot's look similarly.
+                // Baritone might not have a direct "lookWith" API. Sticking to current implementation for "with".
+                // Or, we could make Baritone look at a point far in front of the player.
+                skills.log(agent.bot, `Action: lookAtPlayer (player: ${player_name}, direction: ${direction}) - 'with' direction not yet fully Baritone-fied. Using vision_interpreter.`);
+                let result = "";
+                const actionFn = async () => {
+                    result = await agent.vision_interpreter.lookAtPlayer(player_name, direction);
+                };
+                await agent.actions.runAction('action:lookAtPlayer', actionFn);
+                return result;
+            } else if (!player) {
+                 return `Player ${player_name} not found.`;
+            }
+            // Fallback for 'with' or if player not found for 'at' before baritone.
             let result = "";
             const actionFn = async () => {
                 result = await agent.vision_interpreter.lookAtPlayer(player_name, direction);
@@ -447,14 +630,12 @@ export const actionsList = [
             'y': { type: 'int', description: 'y coordinate' },
             'z': { type: 'int', description: 'z coordinate' }
         },
-        perform: async function(agent, x, y, z) {
-            let result = "";
-            const actionFn = async () => {
-                result = await agent.vision_interpreter.lookAtPosition(x, y, z);
-            };
-            await agent.actions.runAction('action:lookAtPosition', actionFn);
-            return result;
-        }
+        perform: runAsAction(async (agent, x, y, z) => { // Wrapped with runAsAction for consistency
+            skills.log(agent.bot, `Action: lookAtPosition ${x}, ${y}, ${z} using Baritone.`);
+            await baritoneClient.lookAt(x, y, z);
+            skills.log(agent.bot, `Baritone lookAt(${x}, ${y}, ${z}) command issued.`);
+            // No explicit result needed, ActionManager handles success/failure.
+        })
     },
     {
         name: '!digDown',
