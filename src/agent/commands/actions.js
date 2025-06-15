@@ -325,6 +325,18 @@ export const actionsList = [
         })
     },
     {
+        name: '!huntFoodIfHungry',
+        description: 'If hunger is below a threshold, finds and hunts a nearby passive animal for food.',
+        params: {
+            'hunger_threshold': {type: 'int', description: 'The hunger level below which to start hunting.', optional: true, default: 10},
+            'search_radius': {type: 'int', description: 'How far to search for animals.', optional: true, default: 64}
+        },
+        perform: runAsAction(async (agent, hunger_threshold, search_radius) => {
+            // runAsAction will provide default values if optional params are not given by LLM
+            await skills.huntFoodIfHungry(agent.bot, hunger_threshold, search_radius);
+        })
+    },
+    {
         name: '!goToBed',
         description: 'Go to the nearest bed and sleep.',
         perform: runAsAction(async (agent) => {

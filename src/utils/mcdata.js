@@ -81,9 +81,73 @@ export function isHuntable(mob) {
     return animals.includes(mob.name.toLowerCase()) && !mob.metadata[16]; // metadata 16 is not baby
 }
 
-export function isHostile(mob) {
-    if (!mob || !mob.name) return false;
-    return  (mob.type === 'mob' || mob.type === 'hostile') && mob.name !== 'iron_golem' && mob.name !== 'snow_golem';
+export function isHostile(entity) {
+    if (!entity || !entity.name || !entity.type) return false;
+    // Mob type in minecraft-data includes 'hostile' for most aggressive mobs
+    // Some entities like 'vex' or 'guardian' might be 'mob' but are hostile.
+    // Specific checks might be needed if mcData.entitiesByName[entity.name].type is not 'hostile'
+    const hostileNames = [
+        'blaze', 'creeper', 'drowned', 'elder_guardian', 'enderman', 'endermite',
+        'evoker', 'ghast', 'guardian', 'hoglin', 'husk', 'magma_cube', 'phantom',
+        'piglin_brute', 'pillager', 'ravager', 'shulker', 'silverfish', 'skeleton',
+        'slime', 'stray', 'spider', 'vex', 'vindicator', 'warden', 'witch',
+        'wither_skeleton', 'wither', 'zoglin', 'zombie', 'zombie_villager', 'zombified_piglin'
+    ];
+    if (hostileNames.includes(entity.name)) return true;
+    // Fallback for generally hostile mob types if not covered by specific name
+    const mcEntity = mcdata.entitiesByName[entity.name];
+    if (mcEntity && mcEntity.type === 'hostile') return true;
+
+    return  (entity.type === 'mob' && entity.name !== 'iron_golem' && entity.name !== 'snow_golem' && entity.name !== 'wolf' && entity.name !== 'polar_bear' && !isPassive(entity)); // Wolf/polar bear are neutral
+}
+
+export function isPassive(entity) {
+    if (!entity || !entity.name || !entity.type) return false;
+    const passiveNames = [
+        'allay', 'axolotl', 'bat', 'camel', 'cat', 'chicken', 'cod', 'cow', 'donkey',
+        'frog', 'glow_squid', 'horse', 'mooshroom', 'mule', 'ocelot', 'parrot', 'pig',
+        'pufferfish', 'rabbit', 'salmon', 'sheep', 'skeleton_horse', 'sniffer', 'snow_golem',
+        'squid', 'strider', 'tadpole', 'tropical_fish', 'turtle', 'villager', 'wandering_trader',
+        'zombie_horse', 'iron_golem' // Iron golems are passive unless provoked
+    ];
+    if (passiveNames.includes(entity.name)) return true;
+    const mcEntity = mcdata.entitiesByName[entity.name];
+    if (mcEntity && mcEntity.type === 'passive') return true;
+    return false;
+}
+
+export function isVehicle(entity) {
+    if (!entity || !entity.name) return false;
+    const vehicleNames = [
+        'boat', 'chest_boat', 'minecart', 'chest_minecart', 'furnace_minecart',
+        'tnt_minecart', 'hopper_minecart', 'spawner_minecart', 'command_block_minecart'
+        // Note: Entities like pigs or striders can become vehicles when saddled,
+        // but their primary 'name' or 'type' might not reflect that directly.
+        // This function checks for dedicated vehicle entities.
+    ];
+    return vehicleNames.includes(entity.name);
+}
+
+export function isProjectile(entity) {
+    if (!entity || !entity.type || !entity.name) return false;
+    // Based on typical entity types for projectiles in Mineflayer
+    // entity.type could be 'projectile' or 'object' for some
+    // entity.name is more specific
+    const projectileNames = [
+        'arrow', 'spectral_arrow', 'trident',
+        'snowball', 'egg', 'ender_pearl', 'experience_bottle', 'potion', 'llama_spit',
+        'fireball', 'small_fireball', 'dragon_fireball', 'wither_skull', 'shulker_bullet',
+        'fishing_bobber'
+    ];
+    if (projectileNames.includes(entity.name)) return true;
+
+    // Some projectiles might just be 'object' type with a specific displayName or no name
+    // This is a heuristic; mcdata might have better classification if available
+    if (entity.type === 'projectile') return true;
+    if (entity.objectType === 'Arrow' || entity.objectType === 'ThrownPotion' || entity.objectType === 'Fireball') return true;
+
+
+    return false;
 }
 
 // blocks that don't work with collectBlock, need to be manually collected

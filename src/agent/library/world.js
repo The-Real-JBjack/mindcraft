@@ -385,3 +385,89 @@ export function getBiomeName(bot) {
     const biomeId = bot.world.getBiome(bot.entity.position);
     return mc.getAllBiomes()[biomeId].name;
 }
+
+export function getInventorySummary(bot) {
+    /**
+     * Get a string summary of the bot's inventory.
+     * @param {Bot} bot - The bot to get the inventory summary for.
+     * @returns {string} - A string summarizing the inventory (e.g., "Inventory: oak_log: 64, stone: 32").
+     *                   Returns "Inventory: Empty" if inventory is empty.
+     */
+    const items = bot.inventory.items();
+    if (items.length === 0) {
+        return "Inventory: Empty";
+    }
+    // Consolidate items by name and count
+    const summary = items.reduce((acc, item) => {
+        if (item) { // Ensure item is not null
+            acc[item.name] = (acc[item.name] || 0) + item.count;
+        }
+        return acc;
+    }, {});
+
+    const summaryString = Object.entries(summary)
+        .map(([name, count]) => `${name}: ${count}`)
+        .join(', ');
+
+    return `Inventory: ${summaryString}`;
+}
+
+export function getNearbyEntitiesSummary(bot, range = 32) {
+    /**
+     * Get a string summary of nearby entities, categorized.
+     * @param {Bot} bot - The bot instance.
+     * @param {number} range - The search radius for entities.
+     * @returns {string} - A formatted string summarizing nearby entities.
+     */
+    const entities = {
+        hostile: [],
+        passive: [],
+        item: [],
+        player: [],
+        vehicle: [], // (e.g., minecart, boat)
+        projectile: [], // (e.g., arrow, fireball)
+        other: []
+    };
+
+    for (const entity of Object.values(bot.entities)) {
+        if (entity === bot.entity) continue; // Skip self
+
+        const distance = bot.entity.position.distanceTo(entity.position);
+        if (distance > range) continue;
+
+        const entityInfo = `${entity.name || entity.displayName || entity.type} (${distance.toFixed(1)}m)`;
+
+        if (entity.type === 'player') {
+            entities.player.push(`${entity.username} (${distance.toFixed(1)}m)`);
+        } else if (entity.type === 'mob') {
+            if (mc.isHostile(entity)) { // mc.isHostile would need to be a utility function
+                entities.hostile.push(entityInfo);
+            } else {
+                entities.passive.push(entityInfo);
+            }
+        } else if (entity.type === 'object' || entity.name === 'item') { // Mineflayer sometimes uses 'object' for items
+             entities.item.push(`${entity.displayName || entity.name || 'item'} (${distance.toFixed(1)}m)`);
+        } else if (entity.type === 'vehicle' || mc.isVehicle(entity)) { // mc.isVehicle needs to be a utility
+             entities.vehicle.push(entityInfo);
+        } else if (mc.isProjectile(entity)) { // mc.isProjectile needs to be a utility
+             entities.projectile.push(entityInfo);
+        } else {
+            entities.other.push(entityInfo);
+        }
+    }
+
+    let summaryParts = [];
+    if (entities.hostile.length > 0) summaryParts.push(`Hostile: ${entities.hostile.join(', ')}`);
+    if (entities.passive.length > 0) summaryParts.push(`Passive: ${entities.passive.join(', ')}`);
+    if (entities.item.length > 0) summaryParts.push(`Items: ${entities.item.join(', ')}`);
+    if (entities.player.length > 0) summaryParts.push(`Players: ${entities.player.join(', ')}`);
+    if (entities.vehicle.length > 0) summaryParts.push(`Vehicles: ${entities.vehicle.join(', ')}`);
+    if (entities.projectile.length > 0) summaryParts.push(`Projectiles: ${entities.projectile.join(', ')}`);
+    if (entities.other.length > 0) summaryParts.push(`Other: ${entities.other.join(', ')}`);
+
+    if (summaryParts.length === 0) {
+        return `No entities found nearby (range ${range}).`;
+    }
+
+    return `Nearby Entities (range ${range}): ${summaryParts.join('. ')}.`;
+}

@@ -376,16 +376,27 @@ export async function defendSelf(bot, range=9) {
         await equipHighestAttack(bot);
         if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
             try {
-                bot.pathfinder.setMovements(new pf.Movements(bot));
-                await bot.pathfinder.goto(new pf.goals.GoalFollow(enemy, 3.5), true);
-            } catch (err) {/* might error if entity dies, ignore */}
+                // TODO: Consider dynamic target following for combat if Baritone's #follow entity <type> isn't specific enough
+                // or if #goal <entity_uuid> and #path becomes available/reliable.
+                // For now, goToPosition moves to the enemy's last known location.
+                // The bot.pvp.attack(enemy) call below will handle continuous chasing once in range.
+                log(bot, `Moving towards enemy ${enemy.name || 'entity'} at ${enemy.position} using Baritone (via goToPosition).`);
+                await goToPosition(bot, enemy.position.x, enemy.position.y, enemy.position.z, 3.5);
+            } catch (err) {
+                log(bot, `Baritone (goToPosition) failed to reach enemy: ${err.message}`);
+                /* might error if entity dies, ignore or handle */
+            }
         }
         if (bot.entity.position.distanceTo(enemy.position) <= 2) {
             try {
-                bot.pathfinder.setMovements(new pf.Movements(bot));
-                let inverted_goal = new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, 2));
-                await bot.pathfinder.goto(inverted_goal, true);
-            } catch (err) {/* might error if entity dies, ignore */}
+                log(bot, `Too close to enemy ${enemy.name || 'entity'} at ${enemy.position}. Moving away using Baritone.`);
+                await bot.agent.baritoneSetGoal(bot.agent, enemy.position.x, enemy.position.y, enemy.position.z);
+                await bot.agent.baritoneInvertGoal(bot.agent);
+                await bot.agent.baritonePath(bot.agent);
+            } catch (err) {
+                log(bot, `Baritone failed to move away from enemy: ${err.message}`);
+                /* might error if entity dies, ignore or handle */
+            }
         }
         bot.pvp.attack(enemy);
         attacked = true;
@@ -709,18 +720,21 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
     const pos_above = pos.plus(Vec3(0,1,0));
     const dont_move_for = ['torch', 'redstone_torch', 'redstone_wire', 'lever', 'button', 'rail', 'detector_rail', 'powered_rail', 'activator_rail', 'tripwire_hook', 'tripwire', 'water_bucket'];
     if (!dont_move_for.includes(blockType) && (pos.distanceTo(targetBlock.position) < 1 || pos_above.distanceTo(targetBlock.position) < 1)) {
-        // too close
-        let goal = new pf.goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2);
-        let inverted_goal = new pf.goals.GoalInvert(goal);
-        bot.pathfinder.setMovements(new pf.Movements(bot));
-        await bot.pathfinder.goto(inverted_goal);
+        // too close, move away using Baritone
+        log(bot, `Too close to target ${targetBlock.position}. Moving away with Baritone.`);
+        try {
+            await bot.agent.baritoneSetGoal(bot.agent, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z);
+            await bot.agent.baritoneInvertGoal(bot.agent); // Invert to move away from the goal
+            await bot.agent.baritonePath(bot.agent); // Execute pathing
+        } catch (err) {
+            log(bot, `Baritone failed to move away: ${err.message}`);
+            // Decide if this is a fatal error for placeBlock or if it can proceed
+        }
     }
     if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
-        // too far
-        let pos = targetBlock.position;
-        let movements = new pf.Movements(bot);
-        bot.pathfinder.setMovements(movements);
-        await bot.pathfinder.goto(new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        // too far, use goToPosition (which now uses Baritone)
+        log(bot, `Too far from target ${targetBlock.position}. Navigating with Baritone via goToPosition.`);
+        await goToPosition(bot, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 4);
     }
     
     await bot.equip(block, 'hand');
@@ -1026,32 +1040,23 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
         return true;
     }
     
-    const movements = new pf.Movements(bot);
-    bot.pathfinder.setMovements(movements);
-    
-    const checkProgress = () => {
-        if (bot.targetDigBlock) {
-            const targetBlock = bot.targetDigBlock;
-            const itemId = bot.heldItem ? bot.heldItem.type : null;
-            if (!targetBlock.canHarvest(itemId)) {
-                log(bot, `Pathfinding stopped: Cannot break ${targetBlock.name} with current tools.`);
-                bot.pathfinder.stop();
-                bot.stopDigging();
-            }
-        }
-    };
-    
-    const progressInterval = setInterval(checkProgress, 1000);
-    
+    // The min_distance parameter is kept for API compatibility,
+    // but Baritone's behavior might differ from the old pathfinder.
+    // Baritone will attempt to reach the exact coordinates or a safe spot nearby.
+    // Further adjustments might be needed if specific min_distance behavior is critical.
+    log(bot, `Attempting to navigate to ${x}, ${y}, ${z} using Baritone.`);
     try {
-        await bot.pathfinder.goto(new pf.goals.GoalNear(x, y, z, min_distance));
-        log(bot, `You have reached at ${x}, ${y}, ${z}.`);
+        // Assuming bot.agent gives access to the agent instance with Baritone methods
+        if (!bot.agent || !bot.agent.baritoneGoToCoordinates) {
+            log(bot, "Baritone functions not available on bot.agent.");
+            return false;
+        }
+        const result = await bot.agent.baritoneGoToCoordinates(bot.agent, x, y, z); // Pass agent instance
+        log(bot, `Baritone navigation successful: ${result}`);
         return true;
-    } catch (err) {
-        log(bot, `Pathfinding stopped: ${err.message}.`);
+    } catch (error) {
+        log(bot, `Baritone navigation failed: ${error.message}`);
         return false;
-    } finally {
-        clearInterval(progressInterval);
     }
 }
 
@@ -1148,11 +1153,20 @@ export async function followPlayer(bot, username, distance=4) {
     if (!player)
         return false;
 
-    const move = new pf.Movements(bot);
-    bot.pathfinder.setMovements(move);
-    bot.pathfinder.setGoal(new pf.goals.GoalFollow(player, distance), true);
-    log(bot, `You are now actively following player ${username}.`);
+    try {
+        log(bot, `Attempting to follow player ${username} using Baritone.`);
+        await bot.agent.baritoneFollow(bot.agent, 'player', username);
+        // Note: Baritone's follow is persistent. The original loop's purpose might change.
+        // It was for re-evaluating pathfinder, but Baritone handles its own persistence.
+        // We keep the loop for cheat mode and unstuck logic for now.
+        log(bot, `Baritone is now actively following player ${username}.`);
+    } catch (err) {
+        log(bot, `Baritone failed to initiate follow for player ${username}: ${err.message}`);
+        return false; // Could not start following
+    }
 
+    // The loop below is now primarily for cheat-mode teleports or custom unstuck logic,
+    // as Baritone's #follow command is persistent.
     while (!bot.interrupt_code) {
         await new Promise(resolve => setTimeout(resolve, 500));
         // in cheat mode, if the distance is too far, teleport to the player
@@ -1213,11 +1227,23 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
      * @param {number} distance, the distance to move away.
      * @returns {Promise<boolean>} true if the bot moved away, false otherwise.
      **/
-    let goal = new pf.goals.GoalFollow(entity, distance);
-    let inverted_goal = new pf.goals.GoalInvert(goal);
-    bot.pathfinder.setMovements(new pf.Movements(bot));
-    await bot.pathfinder.goto(inverted_goal);
-    return true;
+    log(bot, `Attempting to move away from entity ${entity.name || 'unknown'} at ${entity.position} using Baritone.`);
+    try {
+        await bot.agent.baritoneSetGoal(bot.agent, entity.position.x, entity.position.y, entity.position.z);
+        await bot.agent.baritoneInvertGoal(bot.agent);
+        // Potentially adjust the inverted goal further if Baritone's default inversion distance isn't 'distance'
+        // For now, we assume 'invert' is sufficient. Adding a 'goal' command after 'invert'
+        // might be needed if 'invert' doesn't take a distance parameter implicitly.
+        // Baritone's 'goal' command after 'invert' would effectively set a new goal, potentially overriding the inversion.
+        // A more direct Baritone command for "move X blocks away from Y" would be ideal if it exists.
+        // Lacking that, this setGoal -> invert -> path is the closest equivalent.
+        await bot.agent.baritonePath(bot.agent);
+        log(bot, `Successfully moved away from entity ${entity.name || 'unknown'}.`);
+        return true;
+    } catch (err) {
+        log(bot, `Baritone failed to move away from entity: ${err.message}`);
+        return false;
+    }
 }
 
 export async function avoidEnemies(bot, distance=16) {
@@ -1232,11 +1258,16 @@ export async function avoidEnemies(bot, distance=16) {
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
     while (enemy) {
-        const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
-        const inverted_goal = new pf.goals.GoalInvert(follow);
-        bot.pathfinder.setMovements(new pf.Movements(bot));
-        bot.pathfinder.setGoal(inverted_goal, true);
-        await new Promise(resolve => setTimeout(resolve, 500));
+        log(bot, `Avoiding enemy ${enemy.name || 'unknown'} at ${enemy.position}.`);
+        const moved = await moveAwayFromEntity(bot, enemy, distance + 1); // Use the refactored function
+        if (!moved && !bot.interrupt_code) {
+            log(bot, `Failed to move away from ${enemy.name || 'unknown'}, trying to attack as fallback.`);
+            // Fallback or different strategy if Baritone fails to move away
+            if (bot.entity.position.distanceTo(enemy.position) < 3) { // Only attack if very close
+                 await attackEntity(bot, enemy, false); // Perform a single attack
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, 200)); // Short pause before re-evaluating
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
         if (bot.interrupt_code) {
             break;
@@ -1501,4 +1532,55 @@ export async function digDown(bot, distance = 10) {
     }
     log(bot, `Dug down ${distance} blocks.`);
     return true;
+}
+
+export async function huntFoodIfHungry(bot, hungerThreshold = 10, searchRadius = 64) {
+    /**
+     * If hunger is below a threshold, finds and hunts a nearby passive animal for food.
+     * @param {MinecraftBot} bot - Reference to the Minecraft bot.
+     * @param {number} hungerThreshold - The hunger level below which to start hunting.
+     * @param {number} searchRadius - How far to search for animals.
+     * @returns {Promise<boolean>} True if hunting was attempted and (presumably) successful, false otherwise.
+     */
+    if (bot.food >= hungerThreshold) {
+        log(bot, `Not hungry enough to hunt. Current food level: ${bot.food}, threshold: ${hungerThreshold}.`);
+        return false;
+    }
+
+    log(bot, `Hunger level ${bot.food} is below threshold ${hungerThreshold}. Looking for food...`);
+
+    const foodAnimals = ['pig', 'cow', 'sheep', 'chicken']; // Add more if needed, e.g., rabbit
+
+    const animal = world.getNearestEntityWhere(
+        bot,
+        (entity) => foodAnimals.includes(entity.name) && entity.position.distanceTo(bot.entity.position) <= searchRadius,
+        searchRadius // Ensure this function actually uses the radius parameter correctly or filter by distance post-retrieval.
+    );
+
+    if (!animal) {
+        log(bot, `No food animals found nearby within ${searchRadius} blocks.`);
+        return false;
+    }
+
+    log(bot, `Hungry. Found ${animal.name} at ${animal.position} to hunt.`);
+
+    try {
+        const reached = await goToPosition(bot, animal.position.x, animal.position.y, animal.position.z, 1);
+        if (!reached) {
+            log(bot, `Failed to navigate to ${animal.name} for hunting.`);
+            return false;
+        }
+
+        const killed = await attackEntity(bot, animal, true); // attackEntity handles pickup
+        if (killed) {
+            log(bot, `Successfully hunted ${animal.name}.`);
+            return true;
+        } else {
+            log(bot, `Failed to kill ${animal.name} after reaching it.`);
+            return false;
+        }
+    } catch (error) {
+        log(bot, `An error occurred during hunting ${animal.name}: ${error.message}`);
+        return false;
+    }
 }

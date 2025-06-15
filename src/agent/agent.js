@@ -1,6 +1,22 @@
 import { History } from './history.js';
 import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
+import { sendBaritoneCommand } from './baritone_bridge.js';
+import {
+  baritoneGoToCoordinates,
+  baritoneGoToBlockType,
+  baritoneStop,
+  baritoneMineBlock,
+  baritoneSetSetting,
+  baritoneFindBlock,
+  baritoneGetETA,
+  baritoneGetProcInfo,
+  baritoneSetGoal,
+  baritoneSetGoalHere,
+  baritoneInvertGoal,
+  baritonePath,
+  baritoneFollow
+} from './baritone_actions.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
@@ -21,6 +37,7 @@ export class Agent {
     async start(profile_fp, load_mem=false, init_message=null, count_id=0, task_path=null, task_id=null) {
         this.last_sender = null;
         this.count_id = count_id;
+        this.pendingBaritoneCommands = {};
         if (!profile_fp) {
             throw new Error('No profile filepath provided');
         }
@@ -63,10 +80,26 @@ export class Agent {
         this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
         blacklistCommands(this.blocked_actions);
 
+        this.sendBaritoneCommand = sendBaritoneCommand;
+        this.baritoneGoToCoordinates = baritoneGoToCoordinates;
+        this.baritoneGoToBlockType = baritoneGoToBlockType;
+        this.baritoneStop = baritoneStop;
+        this.baritoneMineBlock = baritoneMineBlock;
+        this.baritoneSetSetting = baritoneSetSetting;
+        this.baritoneFindBlock = baritoneFindBlock;
+        this.baritoneGetETA = baritoneGetETA;
+        this.baritoneGetProcInfo = baritoneGetProcInfo;
+        this.baritoneSetGoal = baritoneSetGoal;
+        this.baritoneSetGoalHere = baritoneSetGoalHere;
+        this.baritoneInvertGoal = baritoneInvertGoal;
+        this.baritonePath = baritonePath;
+        this.baritoneFollow = baritoneFollow;
+
         serverProxy.connect(this);
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
+        this.bot.agent = this; // Make agent instance available on bot object
 
         initModes(this);
 
@@ -136,14 +169,45 @@ export class Agent {
         ];
         
         const respondFunc = async (username, message) => {
-            if (username === this.name) return;
+            console.log(`[CHAT] ${username}: ${message}`);
+
+            // Baritone response handling
+            if (username === this.name || username === 'Baritone' || !username) { // Baritone might use bot's name, 'Baritone', or be a system message
+                const baritoneSuccessKeywords = ["goal reached", "finished", "completed", "done", "path found", "resuming", "arrived"];
+                const baritoneErrorKeywords = ["error", "invalid", "cannot", "unable", "failed", "no path", "could not", "timeout"];
+
+                for (const commandId in this.pendingBaritoneCommands) {
+                    const pendingCommand = this.pendingBaritoneCommands[commandId];
+                    let resolved = false;
+                    let rejected = false;
+
+                    if (baritoneSuccessKeywords.some(keyword => message.toLowerCase().includes(keyword))) {
+                        this.history.add('baritone_response', `Success for command "${pendingCommand.command}": ${message}`);
+                        pendingCommand.resolve(message);
+                        resolved = true;
+                    } else if (baritoneErrorKeywords.some(keyword => message.toLowerCase().includes(keyword))) {
+                        this.history.add('baritone_response', `Error for command "${pendingCommand.command}": ${message}`);
+                        pendingCommand.reject(new Error(message));
+                        rejected = true;
+                    }
+
+                    if (resolved || rejected) {
+                        clearTimeout(pendingCommand.timeout);
+                        delete this.pendingBaritoneCommands[commandId];
+                        return; // Baritone message handled, no further processing needed for this message
+                    }
+                }
+            }
+
+            if (username === this.name) return; // If it was a self-message but not a Baritone response, ignore
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
+
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
 
                 this.shut_up = false;
 
-                console.log(this.name, 'received message from', username, ':', message);
+                // console.log(this.name, 'received message from', username, ':', message); // Already logged at the top
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
@@ -398,6 +462,27 @@ export class Agent {
 
     startEvents() {
         // Custom events
+        this.bot.on('blockPlaced', (oldBlock, newBlock) => {
+            if (newBlock) { // newBlock can sometimes be null if placement failed server-side
+                this.history.add('system', `Placed block ${newBlock.name} at ${newBlock.position.x}, ${newBlock.position.y}, ${newBlock.position.z}`);
+            }
+        });
+        // Note: 'diggingCompleted' is when the bot finishes digging, not necessarily when any block breaks.
+        // For more general block break logging by the bot, one might need to hook into bot.dig or check block_update events.
+        // This event might be noisy if other things break blocks near the bot.
+        this.bot.on('diggingCompleted', (block) => {
+            if (block) {
+                this.history.add('system', `Finished digging ${block.name} at ${block.position.x}, ${block.position.y}, ${block.position.z}`);
+            }
+        });
+        this.bot.on('playerCollect', (collector, collected) => {
+            if (collector.username === this.name) {
+                // collected.name might be undefined for some items, using type as fallback.
+                const itemName = collected.name || (collected.type ? `item_id_${collected.type}` : 'item');
+                this.history.add('system', `Picked up ${itemName}`);
+            }
+        });
+
         this.bot.on('time', () => {
             if (this.bot.time.timeOfDay == 0)
             this.bot.emit('sunrise');

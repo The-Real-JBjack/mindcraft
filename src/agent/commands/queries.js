@@ -66,6 +66,13 @@ export const queryList = [
         }
     },
     {
+        name: "?getInventorySummary",
+        description: "Returns a summary of the bot's current inventory as a string.",
+        perform: async function (agent) { // Marked async just in case, though current implementation is sync
+            return world.getInventorySummary(agent.bot);
+        }
+    },
+    {
         name: "!inventory",
         description: "Get your bot's inventory.",
         perform: function (agent) {
@@ -164,6 +171,16 @@ export const queryList = [
                 res += ': none';
             }
             return pad(res);
+        }
+    },
+    {
+        name: "?getNearbyEntitiesSummary",
+        description: "Returns a summary of nearby entities, categorized by type.",
+        params: {
+            'range': {type: 'int', description: 'The search radius for entities.', optional: true, default: 32}
+        },
+        perform: async function (agent, range) { // Default value for range is handled by parseCommandMessage if optional
+            return world.getNearbyEntitiesSummary(agent.bot, range);
         }
     },
     {

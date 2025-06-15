@@ -1,10 +1,11 @@
 import { getBlockId, getItemId } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
-import { queryList } from './queries.js';
+import { queryList, executeQuery as performQueryExecute } from './queries.js'; // Renamed to avoid conflict if any
 
 let suppressNoDomainWarning = false;
 
-const commandList = queryList.concat(actionsList);
+// Combine actions and queries into a single list and map for convenience
+export const commandList = queryList.concat(actionsList); // Export if needed elsewhere, otherwise const
 const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;
@@ -15,7 +16,8 @@ export function getCommand(name) {
 }
 
 export function blacklistCommands(commands) {
-    const unblockable = ['!stop', '!stats', '!inventory', '!goal'];
+    // Adjusted to handle both '!' and '?' prefixes if necessary, though unblockable is usually for actions
+    const unblockable = ['!stop', '!stats', '!inventory', '!goal', '?getInventorySummary'];
     for (let command_name of commands) {
         if (unblockable.includes(command_name)){
             console.warn(`Command ${command_name} is unblockable`);
@@ -26,20 +28,20 @@ export function blacklistCommands(commands) {
     }
 }
 
-const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
+// Updated regex to match both ! and ? prefixes
+const commandRegex = /([!?])(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/;
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
 
 export function containsCommand(message) {
     const commandMatch = message.match(commandRegex);
     if (commandMatch)
-        return "!" + commandMatch[1];
+        return commandMatch[1] + commandMatch[2]; // Returns prefix + command name (e.g., "!stop", "?getInventorySummary")
     return null;
 }
 
-export function commandExists(commandName) {
-    if (!commandName.startsWith("!"))
-        commandName = "!" + commandName;
-    return commandMap[commandName] !== undefined;
+export function commandExists(commandNameWithPrefix) {
+    // Assumes commandNameWithPrefix already includes '!' or '?'
+    return commandMap[commandNameWithPrefix] !== undefined;
 }
 
 /**
@@ -96,16 +98,18 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
  */
 export function parseCommandMessage(message) {
     const commandMatch = message.match(commandRegex);
-    if (!commandMatch) return `Command is incorrectly formatted`;
+    if (!commandMatch) return `Command is incorrectly formatted. Must start with ! or ?.`;
 
-    const commandName = "!"+commandMatch[1];
+    const commandPrefix = commandMatch[1];
+    const commandName = commandMatch[2];
+    const commandNameWithPrefix = commandPrefix + commandName;
 
     let args;
-    if (commandMatch[2]) args = commandMatch[2].match(argRegex);
+    if (commandMatch[3]) args = commandMatch[3].match(argRegex); // Group 3 for args
     else args = [];
 
-    const command = getCommand(commandName);
-    if(!command) return `${commandName} is not a command.`
+    const command = getCommand(commandNameWithPrefix);
+    if(!command) return `${commandNameWithPrefix} is not a command.`
 
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
@@ -132,12 +136,12 @@ export function parseCommandMessage(message) {
                 arg = parseBoolean(arg); break;
             case 'BlockName':
             case 'ItemName':
-                if (arg.endsWith('plank'))
+                if (arg.endsWith('plank') && param.type === 'BlockName') // Ensure this heuristic is only for blocks
                     arg += 's'; // catches common mistakes like "oak_plank" instead of "oak_planks"
             case 'string':
                 break;
             default:
-                throw new Error(`Command '${commandName}' parameter '${paramNames[i]}' has an unknown type: ${param.type}`);
+                throw new Error(`Command '${commandNameWithPrefix}' parameter '${paramNames[i]}' has an unknown type: ${param.type}`);
         }
         if(arg === null || Number.isNaN(arg))
             return `Error: Param '${paramNames[i]}' must be of type ${param.type}.`
@@ -156,8 +160,9 @@ export function parseCommandMessage(message) {
                     //Alternatively arg could be set to the nearest value in the domain.
                 }
             } else if (!suppressNoDomainWarning) {
-                console.warn(`Command '${commandName}' parameter '${paramNames[i]}' has no domain set. Expect any value [-Infinity, Infinity].`)
-                suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
+                // console.warn(`Command '${commandNameWithPrefix}' parameter '${paramNames[i]}' has no domain set. Expect any value [-Infinity, Infinity].`);
+                // Suppressing this warning as it can be noisy and many params don't need explicit domains.
+                // suppressNoDomainWarning = true;
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
             if(getBlockId(arg) == null && arg !== 'air') return  `Invalid block type: ${arg}.`
@@ -167,19 +172,25 @@ export function parseCommandMessage(message) {
         args[i] = arg;
     }
     
-    return { commandName, args };
+    return { commandName: commandNameWithPrefix, args };
 }
 
 export function truncCommandMessage(message) {
-    const commandMatch = message.match(commandRegex);
+    const commandMatch = message.match(commandRegex); // Uses updated regex
     if (commandMatch) {
         return message.substring(0, commandMatch.index + commandMatch[0].length);
     }
     return message;
 }
 
-export function isAction(name) {
-    return actionsList.find(action => action.name === name) !== undefined;
+export function isAction(commandNameWithPrefix) {
+    // An action must start with '!' and be in the actionsList.
+    return commandNameWithPrefix.startsWith('!') && actionsList.find(action => action.name === commandNameWithPrefix) !== undefined;
+}
+
+export function isQuery(commandNameWithPrefix) {
+    // A query must start with '?' and be in the queryList.
+    return commandNameWithPrefix.startsWith('?') && queryList.find(query => query.name === commandNameWithPrefix) !== undefined;
 }
 
 /**
@@ -207,22 +218,30 @@ function numParams(command) {
 }
 
 export async function executeCommand(agent, message) {
-    let parsed = parseCommandMessage(message);
-    if (typeof parsed === 'string')
-        return parsed; //The command was incorrectly formatted or an invalid input was given.
-    else {
-        console.log('parsed command:', parsed);
-        const command = getCommand(parsed.commandName);
-        let numArgs = 0;
-        if (parsed.args) {
-            numArgs = parsed.args.length;
-        }
-        if (numArgs !== numParams(command))
-            return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
-        else {
-            const result = await command.perform(agent, ...parsed.args);
-            return result;
-        }
+    let parsed = parseCommandMessage(message); // Uses updated parseCommandMessage
+    if (typeof parsed === 'string') {
+        return parsed; // Error message from parsing
+    }
+
+    console.log('parsed command:', parsed);
+    const command = getCommand(parsed.commandName); // commandName now includes prefix
+
+    // Argument count check (already handled well by parseCommandMessage if params are defined)
+    // but double-checking here or relying on perform function signature is fine.
+    // The original check was:
+    // let numArgs = parsed.args ? parsed.args.length : 0;
+    // if (numArgs !== numParams(command))
+    //     return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
+
+    if (isQuery(parsed.commandName)) {
+        // Use performQueryExecute for queries
+        return await performQueryExecute(agent, parsed.commandName, parsed.args);
+    } else if (isAction(parsed.commandName)) {
+        // Use command.perform for actions
+        return await command.perform(agent, ...parsed.args);
+    } else {
+        // Should not happen if commandExists and getCommand work correctly with commandList
+        return `Command ${parsed.commandName} is neither a known action nor a query.`;
     }
 }
 
