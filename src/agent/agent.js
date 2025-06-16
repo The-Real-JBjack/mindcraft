@@ -17,6 +17,22 @@ import { serverProxy } from './agent_proxy.js';
 import { Task } from './tasks/tasks.js';
 import { say } from './speak.js';
 
+// Helper function to parse internal info messages
+function _parseInternalInfoMessage(message) {
+    let match;
+    // Try parsing INFO_HANDLING_DIRECT_TASK
+    match = message.match(/\(INFO_HANDLING_DIRECT_TASK\) Player '([^']*)' said: '([^']*)'/);
+    if (match) {
+        return { originalPlayerUsername: match[1], originalPlayerMessage: match[2] };
+    }
+    // Try parsing INFO_DELEGATED_SIMPLE_TASK
+    match = message.match(/\(INFO_DELEGATED_SIMPLE_TASK\) For player '([^']*)' message '([^']*)'/);
+    if (match) {
+        return { originalPlayerUsername: match[1], originalPlayerMessage: match[2] };
+    }
+    return null;
+}
+
 export class Agent {
     async start(profile_fp, load_mem=false, init_message=null, count_id=0, task_path=null, task_id=null) {
         this.last_sender = null;
@@ -148,44 +164,65 @@ export class Agent {
 
                 this.shut_up = false; // Allow agent to speak if it was previously told to shut up.
 
-                // New Coordinator/Team logic for public chat messages from players
-                // This block should not run if the message is already part of a coordinated action being executed.
+                // IPB (Initial Processing Bot) and Team Coordination Logic
                 if (!isCoordinatedAction && message_type === 'chat' && !convoManager.isOtherAgent(username)) {
-                    const inGameAgents = convoManager.getInGameAgents();
-                    if (inGameAgents.length > 1) { // Multi-agent scenario
-                        const sortedAgentNames = [...inGameAgents].sort();
-                        const coordinatorName = sortedAgentNames[0];
+                    const onlineAgents = convoManager.getInGameAgents();
+                    if (onlineAgents.length > 0) { // Only proceed if there are any agents online
+                        let ipbName = null;
+                        let mentionedAgent = null;
 
-                        if (this.name === coordinatorName) {
-                            // This agent is the Coordinator
-                            console.log(`[${this.name}] I am the COORDINATOR for public chat from ${username}: "${message}". Initiating team discussion.`);
-                            this.initiateTeamDiscussion(username, message); // Call new method
-                            return;
-                        } else {
-                            // This agent is part of the team but not the Coordinator
-                            console.log(`[${this.name}] Received public chat from ${username}: "${message}". Awaiting coordination from ${coordinatorName}.`);
-                            // This agent will NOT process the original player message directly.
-                            // It will await instructions or a summary from the Coordinator.
+                        // Identify if an agent was explicitly mentioned
+                        for (const agentName of onlineAgents) {
+                            const mentionRegex = new RegExp(`\\b${agentName}\\b`, 'i');
+                            if (mentionRegex.test(message)) {
+                                mentionedAgent = agentName;
+                                break;
+                            }
+                        }
+
+                        if (mentionedAgent) {
+                            ipbName = mentionedAgent;
+                        } else if (onlineAgents.length > 0) { // Default to Coordinator if no one specific is mentioned
+                            ipbName = [...onlineAgents].sort()[0]; // Alphabetically first is default Coordinator/IPB
+                        }
+
+                        if (ipbName) {
+                            if (this.name === ipbName) {
+                                console.log(`[${this.name}] I am the Initial Processing Bot (IPB) for player ${username}'s message: '${message}'. Assessing now.`);
+                                // Call the assessment function (to be implemented in the next step)
+                                this.assessAndRoutePlayerMessage(username, message);
+                                return;
+                            } else if (onlineAgents.includes(this.name)) { // Current bot is an online agent but not IPB
+                                console.log(`[${this.name}] Aware of player ${username}'s message: '${message}'. IPB is ${ipbName}. Awaiting further directives.`);
+                                return;
+                            }
+                        } else if (onlineAgents.length > 0) {
+                            // This case should ideally not be reached if default coordinator logic is sound
+                            console.warn(`[${this.name}] Multi-agent scenario, but no IPB determined for message: "${message}". This agent will not respond.`);
                             return;
                         }
+                        // If onlineAgents.length === 0, or if this agent is not part of onlineAgents (e.g. during startup/shutdown),
+                        // it will fall through to single agent logic / normal processing.
+                        // Also, if onlineAgents.length === 1 and this.name is that agent, it will also fall through.
                     }
-                    // If only one agent is present, it processes the message directly (falls through to the logic below).
                 }
 
-                // Proceed with existing logic if not a multi-agent public chat scenario requiring coordination,
-                // or if it's a whisper, or a message from another bot.
-                console.log(`[${this.name}] received ${message_type} from ${username}: "${message}" (Processing normally or as single agent).`);
+                // Fallback to normal processing for:
+                // - Single agent mode (onlineAgents.length <= 1, and this agent is the one)
+                // - Whispers
+                // - Messages from other bots (that aren't EXECUTE_TASK or suggestions)
+                // - Coordinated actions that have been delegated back to an agent
+                console.log(`[${this.name}] received ${message_type} from ${username}: "${message}" (Processing via standard path).`);
 
                 if (convoManager.isOtherAgent(username) && message_type === 'whisper') {
-                    console.log(`[${this.name}] Processing whisper from another agent ${username}.`);
+                    console.log(`[${this.name}] Standard processing for whisper from another agent ${username}.`);
                 }
 
                 let translation = await handleEnglishTranslation(message);
-                // Pass isCoordinatedAction if it was passed to respondFunc
                 this.handleMessage(username, translation, { isCoordinatedAction });
 
             } catch (error) {
-                console.error(`[${this.name}] Error handling ${message_type} from ${username}:`, error);
+                console.error(`[${this.name}] Error in respondFunc for ${message_type} from ${username}:`, error);
             }
         }
 
@@ -261,6 +298,45 @@ export class Agent {
 
     async handleMessage(source, message, options = {}) {
         const { max_responses = null, isCoordinatedAction = false } = options;
+
+        // Handle internal team messages first
+        if (convoManager.isOtherAgent(source)) {
+            if (message.startsWith('(REQUEST_COORDINATION)')) {
+                console.log(`[${this.name}] Received REQUEST_COORDINATION from ${source}: "${message}"`);
+                // Regex to capture: Player 'USERNAME' said: 'MESSAGE'. IPB IPB_NAME assessed it as needing full team discussion. Please coordinate. Reason: REASON
+                const match = message.match(/\(REQUEST_COORDINATION\) Player '([^']*)' said: '([^']*)'. IPB (\w+) assessed it as needing full team discussion. Please coordinate. Reason: (.*)/);
+                if (match) {
+                    const originalPlayerUsername = match[1];
+                    const originalPlayerMessage = match[2];
+                    const requestingIPBName = match[3];
+                    // const reason = match[4]; // Reason is captured but not explicitly used yet, good for logging.
+                    console.log(`[${this.name}] Default Coordinator processing coordination request from IPB ${requestingIPBName} for player ${originalPlayerUsername}'s message: "${originalPlayerMessage}".`);
+                    this.initiateTeamDiscussion(originalPlayerUsername, originalPlayerMessage);
+                } else {
+                    console.error(`[${this.name}] Could not parse REQUEST_COORDINATION directive: ${message}`);
+                }
+                return;
+            } else if (message.startsWith('(INFO_HANDLING_DIRECT_TASK)') || message.startsWith('(INFO_DELEGATED_SIMPLE_TASK)')) {
+                console.log(`[${this.name}] Received info message from ${source}: "${message}"`);
+                const parsedDetails = _parseInternalInfoMessage(message); // Use helper
+                if (parsedDetails &&
+                    this.activeCoordinationContext &&
+                    this.activeCoordinationContext.originalUsername === parsedDetails.originalPlayerUsername &&
+                    this.activeCoordinationContext.originalMessage === parsedDetails.originalPlayerMessage &&
+                    this.activeCoordinationContext.status === 'awaiting_suggestions') {
+
+                    console.log(`[${this.name}] Cancelling full coordination for "${parsedDetails.originalPlayerMessage}" as an IPB has fast-pathed it.`);
+                    if(this.coordinationSuggestionTimeout) {
+                        clearTimeout(this.coordinationSuggestionTimeout);
+                        this.coordinationSuggestionTimeout = null;
+                    }
+                    this.activeCoordinationContext = null;
+                }
+                return;
+            }
+            // EXECUTE_TASK and suggestion handling are below, after this initial block for new directives.
+        }
+
 
         // Handle (EXECUTE_TASK) directives from Coordinator
         if (convoManager.isOtherAgent(source) && message.startsWith('(EXECUTE_TASK)')) {
@@ -744,6 +820,89 @@ export class Agent {
          if (this.coordinationSuggestionTimeout) { // Should be null if cleared properly, but just in case.
             clearTimeout(this.coordinationSuggestionTimeout);
             this.coordinationSuggestionTimeout = null;
+        }
+    }
+
+    async assessAndRoutePlayerMessage(originalPlayerUsername, originalPlayerMessage) {
+        console.log(`[${this.name}] IPB assessing message from ${originalPlayerUsername}: "${originalPlayerMessage}"`);
+
+        const onlineAgents = convoManager.getInGameAgents();
+        const teamMembersString = onlineAgents.filter(name => name !== this.name).join(', ') || 'none';
+
+        const assessmentPromptText = `You are agent ${this.name}. Player '${originalPlayerUsername}' said: '${originalPlayerMessage}'. Your online teammates are: ${teamMembersString}. Is this message: (a) A simple, direct task you (${this.name}) can handle alone immediately? (b) A simple task that should clearly be handled by another specific online teammate from ${teamMembersString} (if so, which one)? (c) A task that is vague, complex, or requires full team input/discussion? Respond ONLY with a JSON object like: {"assessment": "SELF_SIMPLE | OTHER_SIMPLE | TEAM_DISCUSS", "target_bot_if_other": "BotNameOrNullIfNone", "reason": "brief reason for your assessment"}`;
+
+        let assessmentResponse;
+        let parsedAssessment;
+
+        try {
+            assessmentResponse = await this.prompter.chat_model.sendRequest([], assessmentPromptText);
+            console.log(`[${this.name}] Raw assessment from LLM: ${assessmentResponse}`);
+            parsedAssessment = JSON.parse(assessmentResponse);
+            console.log(`[${this.name}] Parsed assessment:`, parsedAssessment);
+        } catch (error) {
+            console.error(`[${this.name}] Error during LLM assessment or parsing:`, error);
+            // Default to TEAM_DISCUSS on error
+            parsedAssessment = { assessment: "TEAM_DISCUSS", reason: "Error during initial assessment." };
+        }
+
+        const defaultCoordinatorName = onlineAgents.length > 0 ? [...onlineAgents].sort()[0] : this.name; // Fallback to self if no agents somehow
+
+        let assessmentType = parsedAssessment.assessment || "TEAM_DISCUSS"; // Default to team_discuss if assessment is missing
+
+        switch (assessmentType) {
+            case "SELF_SIMPLE":
+                console.log(`[${this.name}] IPB assessed as SELF_SIMPLE. Handling directly. Reason: ${parsedAssessment.reason}`);
+                if (this.name !== defaultCoordinatorName && onlineAgents.includes(defaultCoordinatorName)) {
+                     // Inform the default coordinator if IPB is not the coordinator and is handling directly.
+                    convoManager.sendToBot(defaultCoordinatorName, `(INFO_HANDLING_DIRECT_TASK) Player '${originalPlayerUsername}' said: '${originalPlayerMessage}'. IPB ${this.name} is handling it directly (self-assessed simple). Reason: ${parsedAssessment.reason}`);
+                }
+                await this.handleMessage(originalPlayerUsername, originalPlayerMessage, { isCoordinatedAction: true, isSelfAssessedSimple: true });
+                break;
+            case "OTHER_SIMPLE":
+                const targetBot = parsedAssessment.target_bot_if_other;
+                if (targetBot && onlineAgents.includes(targetBot)) {
+                    console.log(`[${this.name}] IPB assessed as OTHER_SIMPLE. Delegating to ${targetBot}. Reason: ${parsedAssessment.reason}`);
+                    const delegationMsg = `(EXECUTE_TASK) Player '${originalPlayerUsername}' (original message: '${originalPlayerMessage}') requested something. IPB ${this.name} assessed it as a simple task for you. Please proceed. Assessment reason: ${parsedAssessment.reason}`;
+                    convoManager.sendToBot(targetBot, delegationMsg);
+
+                    // Inform the default coordinator if IPB is not the coordinator and has delegated to another non-coordinator agent.
+                    if (this.name !== defaultCoordinatorName && targetBot !== defaultCoordinatorName && onlineAgents.includes(defaultCoordinatorName)) {
+                        convoManager.sendToBot(defaultCoordinatorName, `(INFO_DELEGATED_SIMPLE_TASK) For player '${originalPlayerUsername}' message '${originalPlayerMessage}', IPB ${this.name} delegated to ${targetBot} (assessed simple). Reason: ${parsedAssessment.reason}`);
+                    }
+                } else {
+                    console.warn(`[${this.name}] IPB assessed as OTHER_SIMPLE but target_bot '${targetBot}' is invalid or offline. Defaulting to TEAM_DISCUSS. Original reason: ${parsedAssessment.reason}`);
+                    // Fall-through to TEAM_DISCUSS
+                    assessmentType = "TEAM_DISCUSS"; // Force this for the next block
+                }
+                break;
+            // case "TEAM_DISCUSS" will be handled by the fall-through if not explicitly matched or if OTHER_SIMPLE failed
+        }
+
+        // This handles TEAM_DISCUSS either directly from assessment or as a fallback
+        if (assessmentType === "TEAM_DISCUSS") {
+             console.log(`[${this.name}] IPB assessed as TEAM_DISCUSS or defaulted. Reason: ${parsedAssessment.reason}. Initiating/Requesting full coordination.`);
+            if (this.name === defaultCoordinatorName) { // IPB is the default Coordinator
+                // Check if already coordinating this exact message to prevent re-initiation by self
+                if (this.activeCoordinationContext &&
+                    this.activeCoordinationContext.originalUsername === originalPlayerUsername &&
+                    this.activeCoordinationContext.originalMessage === originalPlayerMessage &&
+                    (this.activeCoordinationContext.status === 'awaiting_suggestions' || this.activeCoordinationContext.status === 'making_decision')) {
+                    console.log(`[${this.name}] Default Coordinator assessed as TEAM_DISCUSS, but already coordinating this specific message. Not re-initiating.`);
+                } else if (this.activeCoordinationContext) {
+                     console.log(`[${this.name}] Default Coordinator assessed as TEAM_DISCUSS, but currently busy coordinating a different message ('${this.activeCoordinationContext.originalMessage}'). Player '${originalPlayerUsername}' may need to repeat their request if it's not picked up by another IPB.`);
+                } else {
+                    console.log(`[${this.name}] Default Coordinator IPB assessed as TEAM_DISCUSS. Initiating full coordination for '${originalPlayerMessage}'.`);
+                    this.initiateTeamDiscussion(originalPlayerUsername, originalPlayerMessage);
+                }
+            } else { // IPB is not the default Coordinator, needs to request coordination
+                 if (onlineAgents.includes(defaultCoordinatorName)) {
+                    convoManager.sendToBot(defaultCoordinatorName, `(REQUEST_COORDINATION) Player '${originalPlayerUsername}' said: '${originalPlayerMessage}'. IPB ${this.name} assessed it as needing full team discussion. Please coordinate. Reason: ${parsedAssessment.reason}`);
+                } else {
+                    // Should not happen if onlineAgents has members, but as a safe fallback:
+                    console.warn(`[${this.name}] Cannot request coordination, default coordinator ${defaultCoordinatorName} seems offline. Handling directly as fallback.`);
+                    await this.handleMessage(originalPlayerUsername, originalPlayerMessage, { isCoordinatedAction: true, isSelfAssessedSimple: true });
+                }
+            }
         }
     }
 }

@@ -216,26 +216,46 @@ By default, the program will use the profiles specified in `settings.js`. You ca
 
 ## Interacting with Multiple Agents in Public Chat
 
-When multiple agent profiles are active (configured by listing multiple profile files in `settings.js`), they employ a new **Coordinator-based team discussion model** to handle public player chat messages. This allows for more sophisticated collaboration.
+When multiple agent profiles are active (configured by listing multiple profile files in `settings.js`), they use a **Hybrid Coordination Model** for public player chat messages. This model aims for both efficiency with simple tasks and collaborative depth for complex ones. All internal bot-to-bot messages for coordination are prefixed (e.g., `(EXECUTE_TASK)`) and are not directly visible in the player chat.
 
-Here's how it works:
+Here's the process:
 
-*   **Coordinator Role**: When a public player message is received, the agent whose name is alphabetically first among all active agents takes on the role of **Coordinator** for that specific message.
-*   **Internal Team Discussion**:
-    *   The Coordinator initiates an internal discussion by relaying the player's message to other online team members (via direct messages prefixed with `(TEAM_COORDINATION)`). It asks for their analysis and suggestions on how to proceed and who should handle the task.
-    *   Each team member analyzes the request and sends their suggestion back to the Coordinator (also via direct message).
-    *   The Coordinator gathers these suggestions.
-*   **Decision and Delegation**:
-    *   Using its AI, the Coordinator considers the original player request and all team suggestions to decide which agent is best suited to handle the request (this could be the Coordinator itself or another team member) and determines the appropriate action or response.
-    *   The Coordinator then informs the designated agent of the decision (via a direct message prefixed with `(EXECUTE_TASK)`), instructing them to proceed.
-*   **User Interaction**:
-    *   You can speak to the group of agents in public chat. One of them (the Coordinator) will manage the team's response.
-    *   **Response Time**: Due to this internal coordination process (collecting suggestions, making a decision), responses to public chat messages in a multi-agent setup may take longer (e.g., 10-20 seconds or more) than when interacting with a single bot or using direct messages.
-    *   **Helping the Team Decide**: To help the agents, you can be specific in your public messages. If you intend for a particular bot to act, addressing it by name (e.g., "Andy, please come here") can guide the team's decision. Using terms like 'team,' 'everyone,' or 'all bots' can signal a task for group consideration.
-*   **Direct Messages**: Direct messages or whispers (e.g., `/msg AgentName Your message`) to a specific agent will bypass this team coordination and be processed only by that agent immediately, as usual. This remains the best way to give specific instructions to individual agents quickly.
-*   **Experimental Feature**: This collaborative decision-making is an advanced and experimental feature. While the goal is intelligent coordination, the process is complex, and results may vary. The prompts guiding this interaction are located in `profiles/defaults/_default.json` (under the `conversing` key) and can be customized.
+1.  **Initial Processing Bot (IPB) Determination**:
+    *   When a player sends a public chat message, one agent is designated as the "Initial Processing Bot" (IPB).
+    *   If the player's message explicitly mentions an online agent by name (e.g., "Andy, come here"), that agent becomes the IPB.
+    *   If no specific agent is mentioned, the agent whose name is alphabetically first among all currently online agents becomes the IPB (this agent also serves as the "Default Coordinator" for full discussions).
 
-This system aims for more natural and intelligent group interactions, but patience is appreciated as the bots deliberate!
+2.  **IPB's Internal Assessment**:
+    *   The IPB performs an internal AI-driven assessment of the player's message. This assessment (invisible to player chat) categorizes the message to decide the best way to handle it:
+        *   **`SELF_SIMPLE` (Fast Path - IPB Handles Directly)**: If the IPB determines the task is simple and best handled by itself, it will proceed to execute the task or respond directly.
+            *   *Internal Communication*: If the IPB is not the Default Coordinator, it silently informs the Default Coordinator with an `(INFO_HANDLING_DIRECT_TASK)` message.
+        *   **`OTHER_SIMPLE` (Fast Path - IPB Delegates Simply)**: If the IPB assesses the task as simple and clearly suited for another specific online teammate, it will directly delegate the task to that teammate.
+            *   *Internal Communication*: The IPB sends an `(EXECUTE_TASK)` directive to the chosen teammate. If neither the IPB nor the target bot is the Default Coordinator, the IPB also sends an `(INFO_DELEGATED_SIMPLE_TASK)` message to the Default Coordinator.
+        *   **`TEAM_DISCUSS` (Full Discussion Path)**: If the IPB deems the task complex, vague, or requiring broader team input, it triggers a full team discussion.
+            *   *Triggering Full Discussion*:
+                *   If the IPB *is* the Default Coordinator, it initiates the full team discussion process directly (see step 3).
+                *   If the IPB is *not* the Default Coordinator, it sends an internal `(REQUEST_COORDINATION)` message to the Default Coordinator, asking them to start the full team discussion.
+
+3.  **Full Team Discussion (if triggered by `TEAM_DISCUSS` assessment)**:
+    *   **Coordinator Initiates**: The Default Coordinator sends a `(TEAM_COORDINATION)` message to all other online team members, quoting the original player's message and asking for suggestions on how to proceed and who should handle the task.
+    *   **Team Members Suggest**: Each team member analyzes the request and sends their suggestion back to the Default Coordinator via a direct internal message.
+    *   **Coordinator Decides & Delegates**: The Default Coordinator gathers all suggestions. Using its AI, it considers the original request and the team's input to decide which agent is best suited and what the action/response should be. It then informs the chosen agent via an `(EXECUTE_TASK)` directive.
+
+4.  **User Interaction & Tips**:
+    *   You can speak to the group of agents in public chat. The system will attempt to route your request efficiently.
+    *   **Response Time**:
+        *   For simple, clearly addressed tasks, the IPB mechanism aims for a "fast path" response, which should be relatively quick.
+        *   If a "full team discussion" is triggered, responses will take longer (e.g., 10-20 seconds or more) due to the internal coordination process.
+    *   **Helping the Team Decide**:
+        *   **Direct Mentions**: If you want a specific bot to handle a task, mentioning its name (e.g., "Lexi, please build a wall") makes it the IPB and can help the AI assess it as `SELF_SIMPLE` or `OTHER_SIMPLE` for a faster outcome.
+        *   **Clarity**: Clear and concise requests are easier for the IPB to assess.
+        *   **Group Tasks**: Using terms like 'team,' 'everyone,' or 'all bots' can signal a task for group consideration, likely leading to a `TEAM_DISCUSS` assessment by the IPB.
+    *   **Direct Messages**: Whispers or direct messages (e.g., `/msg AgentName Your message`) to a specific agent will always bypass this team coordination logic and be processed only by that agent immediately. This remains the most reliable way to give specific instructions to individual agents without delay.
+
+5.  **Experimental Feature**:
+    *   This hybrid coordination model is an advanced and experimental feature. The goal is to achieve intelligent and flexible teamwork. However, the process is complex, and the AI's assessment or decisions might not always be perfect. Prompts guiding these interactions are in `profiles/defaults/_default.json` and can be customized.
+
+Patience is appreciated as the agents (especially the IPB and Coordinator) deliberate and manage team responses!
 
 ## Patches
 
