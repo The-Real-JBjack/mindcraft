@@ -304,6 +304,12 @@ export class Prompter {
                 prompt = prompt.replaceAll('$BLUEPRINTS', blueprints.slice(0, -2));
             }
         }
+        if (prompt.includes('$TEAM_MEMBERS')) {
+            // convoManager is imported as a default export, so it can be used directly.
+            const allAgents = convoManager.getInGameAgents();
+            const teamMembers = allAgents.filter(name => name !== this.agent.name).join(', ');
+            prompt = prompt.replaceAll('$TEAM_MEMBERS', teamMembers.length > 0 ? teamMembers : 'none');
+        }
 
         // check if there are any remaining placeholders with syntax $<word>
         let remaining = prompt.match(/\$[A-Z_]+/g);

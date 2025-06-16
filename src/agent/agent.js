@@ -22,6 +22,8 @@ export class Agent {
         this.last_sender = null;
         this.count_id = count_id;
         this.isProcessingSTT = false; // Initialize STT processing flag
+        this.activeCoordinationContext = null; // For multi-agent coordination
+        this.coordinationSuggestionTimeout = null; // Timeout for suggestions
         if (!profile_fp) {
             throw new Error('No profile filepath provided');
         }
@@ -136,33 +138,62 @@ export class Agent {
             "Gamerule "
         ];
         
-        const respondFunc = async (username, message) => {
-            if (username === this.name) return;
-            if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
+        // Modified respondFunc to include message_type and leader election
+        const respondFunc = async (username, message, message_type, isCoordinatedAction = false) => {
+            if (username === this.name) return; // Message from self, ignore.
+            if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return; // Not in allowed list
+
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
 
-                this.shut_up = false;
+                this.shut_up = false; // Allow agent to speak if it was previously told to shut up.
 
-                console.log(this.name, 'received message from', username, ':', message);
+                // New Coordinator/Team logic for public chat messages from players
+                // This block should not run if the message is already part of a coordinated action being executed.
+                if (!isCoordinatedAction && message_type === 'chat' && !convoManager.isOtherAgent(username)) {
+                    const inGameAgents = convoManager.getInGameAgents();
+                    if (inGameAgents.length > 1) { // Multi-agent scenario
+                        const sortedAgentNames = [...inGameAgents].sort();
+                        const coordinatorName = sortedAgentNames[0];
 
-                if (convoManager.isOtherAgent(username)) {
-                    console.warn('received whisper from other bot??')
+                        if (this.name === coordinatorName) {
+                            // This agent is the Coordinator
+                            console.log(`[${this.name}] I am the COORDINATOR for public chat from ${username}: "${message}". Initiating team discussion.`);
+                            this.initiateTeamDiscussion(username, message); // Call new method
+                            return;
+                        } else {
+                            // This agent is part of the team but not the Coordinator
+                            console.log(`[${this.name}] Received public chat from ${username}: "${message}". Awaiting coordination from ${coordinatorName}.`);
+                            // This agent will NOT process the original player message directly.
+                            // It will await instructions or a summary from the Coordinator.
+                            return;
+                        }
+                    }
+                    // If only one agent is present, it processes the message directly (falls through to the logic below).
                 }
-                else {
-                    let translation = await handleEnglishTranslation(message);
-                    this.handleMessage(username, translation);
+
+                // Proceed with existing logic if not a multi-agent public chat scenario requiring coordination,
+                // or if it's a whisper, or a message from another bot.
+                console.log(`[${this.name}] received ${message_type} from ${username}: "${message}" (Processing normally or as single agent).`);
+
+                if (convoManager.isOtherAgent(username) && message_type === 'whisper') {
+                    console.log(`[${this.name}] Processing whisper from another agent ${username}.`);
                 }
+
+                let translation = await handleEnglishTranslation(message);
+                // Pass isCoordinatedAction if it was passed to respondFunc
+                this.handleMessage(username, translation, { isCoordinatedAction });
+
             } catch (error) {
-                console.error('Error handling message:', error);
+                console.error(`[${this.name}] Error handling ${message_type} from ${username}:`, error);
             }
         }
 
 		this.respondFunc = respondFunc;
 
-        this.bot.on('whisper', respondFunc);
-        if (settings.profiles.length === 1)
-            this.bot.on('chat', respondFunc);
+        // Pass message_type to respondFunc
+        this.bot.on('whisper', (username, message) => respondFunc(username, message, 'whisper'));
+        this.bot.on('chat', (username, message) => respondFunc(username, message, 'chat'));
 
         // Set up auto-eat
         this.bot.autoEat.options = {
@@ -228,7 +259,61 @@ export class Agent {
         convoManager.endAllConversations();
     }
 
-    async handleMessage(source, message, max_responses=null) {
+    async handleMessage(source, message, options = {}) {
+        const { max_responses = null, isCoordinatedAction = false } = options;
+
+        // Handle (EXECUTE_TASK) directives from Coordinator
+        if (convoManager.isOtherAgent(source) && message.startsWith('(EXECUTE_TASK)')) {
+            console.log(`[${this.name}] Received EXECUTE_TASK directive from ${source}: "${message}"`);
+
+            const usernameMatch = message.match(/Player '([^']*)'/);
+            const originalMsgMatch = message.match(/original message: '([^']*)'/);
+            // const actionSummaryMatch = message.match(/Please proceed with: (.*)$/); // Action summary is for context, bot should process original message
+
+            if (usernameMatch && originalMsgMatch) {
+                const originalPlayer = usernameMatch[1];
+                const originalPlayerMessage = originalMsgMatch[1];
+                // const taskSummary = actionSummaryMatch ? actionSummaryMatch[1] : "No summary provided.";
+
+                console.log(`[${this.name}] Executing task delegated by Coordinator for player ${originalPlayer} concerning message: "${originalPlayerMessage}".`);
+
+                // Process the original player's message as if it were a direct command/query to this bot.
+                // isCoordinatedAction: true prevents this from re-triggering coordination logic in respondFunc.
+                // Note: The action_summary from the Coordinator's decision is implicitly handled by the LLM
+                // when it processes the originalPlayerMessage in this context, as the bot's main prompt
+                // will guide its response/action based on that original message.
+                // If the action_summary was a direct chat message for the player, the Coordinator would have sent it.
+                // If it was a command, this handleMessage call will execute it.
+                await this.handleMessage(originalPlayer, originalPlayerMessage, { isCoordinatedAction: true });
+            } else {
+                console.error(`[${this.name}] Could not parse EXECUTE_TASK directive: ${message}`);
+            }
+            return; // Directive handled.
+        }
+
+        // Handle incoming suggestions if this agent is a Coordinator awaiting suggestions
+        if (this.activeCoordinationContext &&
+            this.activeCoordinationContext.status === 'awaiting_suggestions' &&
+            convoManager.isOtherAgent(source) &&
+            !message.startsWith('(TEAM_COORDINATION)')) { // Ensure it's a suggestion, not a broadcast
+
+            console.log(`[${this.name}] Coordinator received suggestion from ${source}: "${message}"`);
+            this.activeCoordinationContext.teamSuggestions[source] = message;
+            this.activeCoordinationContext.receivedFrom.push(source);
+
+            const expectedAgents = convoManager.getInGameAgents().filter(name => name !== this.name);
+            if (this.activeCoordinationContext.receivedFrom.length >= expectedAgents.length) {
+                console.log(`[${this.name}] All expected suggestions received for player message: "${this.activeCoordinationContext.originalMessage}".`);
+                if (this.coordinationSuggestionTimeout) {
+                    clearTimeout(this.coordinationSuggestionTimeout);
+                    this.coordinationSuggestionTimeout = null;
+                }
+                this.activeCoordinationContext.status = 'making_decision';
+                this.processTeamSuggestionsAndDecide(); // Call decision making
+            }
+            return; // Suggestion handled, stop further processing of this message by handleMessage's main logic
+        }
+
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
@@ -236,11 +321,12 @@ export class Agent {
         }
 
         let used_command = false;
-        if (max_responses === null) {
-            max_responses = settings.max_commands === -1 ? Infinity : settings.max_commands;
+        let effective_max_responses = max_responses;
+        if (effective_max_responses === null) {
+            effective_max_responses = settings.max_commands === -1 ? Infinity : settings.max_commands;
         }
-        if (max_responses === -1) {
-            max_responses = Infinity;
+        if (effective_max_responses === -1) {
+            effective_max_responses = Infinity;
         }
 
         const self_prompt = source === 'system' || source === this.name;
@@ -293,8 +379,8 @@ export class Agent {
         this.history.save();
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
-            max_responses = 1; // force only respond to this message, then let self-prompting take over
-        for (let i=0; i<max_responses; i++) {
+            effective_max_responses = 1; // force only respond to this message, then let self-prompting take over
+        for (let i=0; i<effective_max_responses; i++) {
             if (checkInterrupt()) break;
             let history = this.history.getHistory();
             let res = await this.prompter.promptConvo(history);
@@ -525,5 +611,139 @@ export class Agent {
 
     killAll() {
         serverProxy.shutdown();
+    }
+
+    async initiateTeamDiscussion(originalUsername, originalMessage) {
+        // Set up coordination context
+        this.activeCoordinationContext = {
+            originalUsername: originalUsername,
+            originalMessage: originalMessage,
+            teamSuggestions: {},
+            status: 'awaiting_suggestions',
+            receivedFrom: []
+        };
+        console.log(`[${this.name}] Coordinator context set. Awaiting team suggestions for message: "${originalMessage}"`);
+
+        // Start timeout for suggestions
+        const SUGGESTION_TIMEOUT_MS = 15000; // 15 seconds
+        if (this.coordinationSuggestionTimeout) {
+            clearTimeout(this.coordinationSuggestionTimeout); // Clear any existing timeout
+        }
+        this.coordinationSuggestionTimeout = setTimeout(() => {
+            if (this.activeCoordinationContext && this.activeCoordinationContext.status === 'awaiting_suggestions') {
+                console.log(`[${this.name}] Coordination suggestion period ended (timeout) for player message: "${this.activeCoordinationContext.originalMessage}". Received ${this.activeCoordinationContext.receivedFrom.length} suggestions.`);
+                this.activeCoordinationContext.status = 'making_decision';
+                this.processTeamSuggestionsAndDecide(); // Call decision making
+                this.coordinationSuggestionTimeout = null;
+            }
+        }, SUGGESTION_TIMEOUT_MS);
+
+        const inGameAgentNames = convoManager.getInGameAgents();
+        const discussionMsg = `(TEAM_COORDINATION) Player '${originalUsername}' said: "${originalMessage}". Team, please analyze and suggest how we should respond or who should handle this.`;
+
+        console.log(`[${this.name}] Broadcasting team discussion message: "${discussionMsg}"`);
+
+        for (const agentName of inGameAgentNames) {
+            if (agentName !== this.name) {
+                try {
+                    // convoManager.sendToBot expects a message package, not just a string.
+                    // Adjusting to the { message: string, start: boolean } structure if that's what it expects,
+                    // or simply the message string if that's acceptable for non-initial messages.
+                    // For now, assuming it can handle a string directly for ongoing comms,
+                    // or it internally wraps it. If not, this needs adjustment.
+                    // Let's assume a simple string is fine for now as per existing convoManager.sendToBot examples.
+                    convoManager.sendToBot(agentName, discussionMsg);
+                    console.log(`[${this.name}] Relayed coordination message to ${agentName}.`);
+                } catch (error) {
+                    console.error(`[${this.name}] Failed to send coordination message to ${agentName}:`, error);
+                }
+            }
+        }
+    }
+
+    async processTeamSuggestionsAndDecide() {
+        if (!this.activeCoordinationContext || this.activeCoordinationContext.status !== 'making_decision') {
+            console.error(`[${this.name}] processTeamSuggestionsAndDecide called in invalid state:`, this.activeCoordinationContext);
+            if (this.activeCoordinationContext) this.activeCoordinationContext = null; // Attempt to reset
+            return;
+        }
+
+        console.log(`[${this.name}] Coordinator processing team suggestions for player message: "${this.activeCoordinationContext.originalMessage}"`);
+        const { originalUsername, originalMessage, teamSuggestions } = this.activeCoordinationContext;
+
+        const allAgents = convoManager.getInGameAgents();
+        const teamMembersString = allAgents.filter(name => name !== this.name).join(', ') || 'none';
+
+        // Construct the decision-making prompt
+        // Ensure no newlines in JSON string values if LLM is sensitive
+        const decisionPromptText = `You are Coordinator ${this.name}. You are coordinating a response to player '${originalUsername}' who said: '${originalMessage}'. Your team (${teamMembersString}) provided these suggestions: ${JSON.stringify(teamSuggestions)}. Based on all this, decide: 1. What is the best course of action or response? 2. Which agent (you, '${this.name}', or one of '${teamMembersString}') is best suited? Respond ONLY with a JSON object like: {"chosen_agent": "AgentName", "action_summary": "Brief summary of what the chosen agent should do or say", "is_direct_response": true_or_false}`;
+
+        console.log(`[${this.name}] Sending decision prompt to LLM: ${decisionPromptText}`);
+        let decisionResponse;
+        try {
+            decisionResponse = await this.prompter.chat_model.sendRequest([], decisionPromptText); // No prior messages, just the system prompt
+            console.log(`[${this.name}] Raw decision from LLM: ${decisionResponse}`);
+        } catch (error) {
+            console.error(`[${this.name}] Error getting decision from LLM:`, error);
+            this.openChat(`Sorry ${originalUsername}, there was an error coordinating our team's response.`);
+            this.activeCoordinationContext = null;
+            return;
+        }
+
+        let parsedDecision;
+        try {
+            parsedDecision = JSON.parse(decisionResponse);
+        } catch (error) {
+            console.error(`[${this.name}] Error parsing JSON decision from LLM: "${decisionResponse}". Error:`, error);
+            this.openChat(`Sorry ${originalUsername}, I had trouble deciding how our team should respond.`);
+            this.activeCoordinationContext = null;
+            return;
+        }
+
+        console.log(`[${this.name}] Parsed decision:`, parsedDecision);
+        const { chosen_agent, action_summary, is_direct_response } = parsedDecision;
+
+        if (!chosen_agent || !action_summary || typeof is_direct_response === 'undefined') {
+            console.error(`[${this.name}] Invalid decision structure from LLM:`, parsedDecision);
+            this.openChat(`Sorry ${originalUsername}, our team's decision process was unclear. Please try again.`);
+            this.activeCoordinationContext = null;
+            return;
+        }
+
+        // Ensure the chosen agent is valid
+        if (chosen_agent !== this.name && !allAgents.includes(chosen_agent)) {
+            console.error(`[${this.name}] LLM chose an invalid agent: '${chosen_agent}'. Defaulting to self.`);
+            this.openChat(`Sorry ${originalUsername}, there was a mix-up in our team. I'll try to handle your request about "${originalMessage}" myself.`);
+            // Fallback to Coordinator handling the original message directly
+            this.handleMessage(originalUsername, originalMessage, { isCoordinatedAction: true });
+            this.activeCoordinationContext = null;
+            return;
+        }
+
+
+        if (chosen_agent === this.name) {
+            console.log(`[${this.name}] Coordinator (${this.name}) is handling the request from ${originalUsername}.`);
+            if (is_direct_response) {
+                this.routeResponse(originalUsername, action_summary);
+            } else {
+                // Coordinator processes the original message, but now with context that it's a coordinated action
+                this.handleMessage(originalUsername, originalMessage, { isCoordinatedAction: true });
+            }
+            this.activeCoordinationContext = null; // Coordination complete
+        } else {
+            console.log(`[${this.name}] Delegating task to ${chosen_agent} for player ${originalUsername}. Action: ${action_summary}`);
+            const delegationMsg = `(EXECUTE_TASK) Player '${originalUsername}' (original message: '${originalMessage}') requested something. Our team (Coordinator: ${this.name}) decided you should handle it. Please proceed with: ${action_summary}. If this is a direct chat message, use /msg ${originalUsername} ${action_summary}. If it's a command, execute it.`;
+            convoManager.sendToBot(chosen_agent, delegationMsg);
+
+            // Optionally, update context for tracking, though current cycle ends here for Coordinator.
+            // this.activeCoordinationContext.status = 'awaiting_execution';
+            // this.activeCoordinationContext.delegatedTo = chosen_agent;
+            // For now, just reset. A more complex system might track delegated task completion.
+            this.activeCoordinationContext = null;
+        }
+         if (this.coordinationSuggestionTimeout) { // Should be null if cleared properly, but just in case.
+            clearTimeout(this.coordinationSuggestionTimeout);
+            this.coordinationSuggestionTimeout = null;
+        }
     }
 }

@@ -214,6 +214,29 @@ If you try to use an unsupported model, then it will default to a simple word-ov
 
 By default, the program will use the profiles specified in `settings.js`. You can specify one or more agent profiles using the `--profiles` argument: `node main.js --profiles ./profiles/andy.json ./profiles/jill.json`
 
+## Interacting with Multiple Agents in Public Chat
+
+When multiple agent profiles are active (configured by listing multiple profile files in `settings.js`), they employ a new **Coordinator-based team discussion model** to handle public player chat messages. This allows for more sophisticated collaboration.
+
+Here's how it works:
+
+*   **Coordinator Role**: When a public player message is received, the agent whose name is alphabetically first among all active agents takes on the role of **Coordinator** for that specific message.
+*   **Internal Team Discussion**:
+    *   The Coordinator initiates an internal discussion by relaying the player's message to other online team members (via direct messages prefixed with `(TEAM_COORDINATION)`). It asks for their analysis and suggestions on how to proceed and who should handle the task.
+    *   Each team member analyzes the request and sends their suggestion back to the Coordinator (also via direct message).
+    *   The Coordinator gathers these suggestions.
+*   **Decision and Delegation**:
+    *   Using its AI, the Coordinator considers the original player request and all team suggestions to decide which agent is best suited to handle the request (this could be the Coordinator itself or another team member) and determines the appropriate action or response.
+    *   The Coordinator then informs the designated agent of the decision (via a direct message prefixed with `(EXECUTE_TASK)`), instructing them to proceed.
+*   **User Interaction**:
+    *   You can speak to the group of agents in public chat. One of them (the Coordinator) will manage the team's response.
+    *   **Response Time**: Due to this internal coordination process (collecting suggestions, making a decision), responses to public chat messages in a multi-agent setup may take longer (e.g., 10-20 seconds or more) than when interacting with a single bot or using direct messages.
+    *   **Helping the Team Decide**: To help the agents, you can be specific in your public messages. If you intend for a particular bot to act, addressing it by name (e.g., "Andy, please come here") can guide the team's decision. Using terms like 'team,' 'everyone,' or 'all bots' can signal a task for group consideration.
+*   **Direct Messages**: Direct messages or whispers (e.g., `/msg AgentName Your message`) to a specific agent will bypass this team coordination and be processed only by that agent immediately, as usual. This remains the best way to give specific instructions to individual agents quickly.
+*   **Experimental Feature**: This collaborative decision-making is an advanced and experimental feature. While the goal is intelligent coordination, the process is complex, and results may vary. The prompts guiding this interaction are located in `profiles/defaults/_default.json` (under the `conversing` key) and can be customized.
+
+This system aims for more natural and intelligent group interactions, but patience is appreciated as the bots deliberate!
+
 ## Patches
 
 Some of the node modules that we depend on have bugs in them. To add a patch, change your local node module file and run `npx patch-package [package-name]`
