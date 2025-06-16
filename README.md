@@ -47,6 +47,17 @@ You can configure project details in `settings.js`. [See file.](settings.js)
 
 You can configure the agent's name, model, and prompts in their profile like `andy.json` with the `model` field. For comprehensive details, see [Model Specifications](#model-specifications).
 
+### Agent Behavior Settings in `settings.js`
+
+Several options in `settings.js` allow you to customize the agent's behavior and chat output:
+
+*   `hideLLMCommands` (boolean, default: `true`): When true, commands decided by the agent (LLM) will not be displayed in the chat. The agent will still perform the action, but the command itself (e.g., `!move(10,0,1)`) won't appear. Set to `false` to see these commands in chat, which will then be subject to the `verbose_commands` setting.
+*   `verbose_commands` (boolean, default: `true`): When agent commands *are* shown (i.e., `hideLLMCommands` is `false`, or for player-issued commands that are echoed), this setting controls whether the full command syntax is shown or a summarized version (e.g., `*used move*`).
+*   `narrate_behavior` (boolean, default: `true`): Allows the agent to chat about simple automatic actions (e.g., "Picking up item!").
+*   `chat_bot_messages` (boolean, default: `true`): Allows the agent to publicly chat messages to other bots (if not engaged in a direct conversation).
+*   `speak` (boolean, default: `false`): Enables system Text-to-Speech (TTS) for the agent's open chat messages.
+*   `stt.enabled` (boolean, default: `false`): Enables Speech-to-Text (STT) for voice commands (see [Speech-to-Text (STT) / Voice Commands](#speech-to-text-stt--voice-commands) section for more details).
+
 | API | Config Variable | Example Model name | Docs |
 |------|------|------|------|
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | [docs](https://platform.openai.com/docs/models) |

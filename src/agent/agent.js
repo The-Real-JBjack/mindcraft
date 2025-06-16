@@ -21,6 +21,7 @@ export class Agent {
     async start(profile_fp, load_mem=false, init_message=null, count_id=0, task_path=null, task_id=null) {
         this.last_sender = null;
         this.count_id = count_id;
+        this.isProcessingSTT = false; // Initialize STT processing flag
         if (!profile_fp) {
             throw new Error('No profile filepath provided');
         }
@@ -252,7 +253,10 @@ export class Agent {
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
                     return false;
                 }
-                this.routeResponse(source, `*${source} used ${user_command_name.substring(1)}*`);
+                // Modified logic: Only echo command if not processing STT
+                if (!this.isProcessingSTT) {
+                    this.routeResponse(source, `*${source} used ${user_command_name.substring(1)}*`);
+                }
                 if (user_command_name === '!newAction') {
                     // all user-initiated commands are ignored by the bot except for this one
                     // add the preceding message to the history to give context for newAction
@@ -317,16 +321,29 @@ export class Agent {
                 if (checkInterrupt()) break;
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
-                if (settings.verbose_commands) {
-                    this.routeResponse(source, res);
+                // NEW LOGIC STARTS HERE
+                // const isLLMSelfCommand = self_prompt; // self_prompt is (source === 'system' || source === this.name)
+
+                if (self_prompt && settings.hideLLMCommands) {
+                    // If it's an LLM command (self_prompt) and hideLLMCommands is true,
+                    // do nothing here to send it to chat.
+                    // The command is already in history and will be executed.
+                    // Outputting to console for debugging/awareness that a hidden command is run.
+                    console.log(`[${this.name}] Executing hidden command: ${res}`);
+                } else {
+                    // Original logic for showing commands if not hidden or not an LLM self-command
+                    if (settings.verbose_commands) {
+                        this.routeResponse(source, res);
+                    }
+                    else {
+                        let pre_message = res.substring(0, res.indexOf(command_name)).trim();
+                        let chat_message = `*used ${command_name.substring(1)}*`;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
                 }
-                else { // only output command name
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    let chat_message = `*used ${command_name.substring(1)}*`;
-                    if (pre_message.length > 0)
-                        chat_message = `${pre_message}  ${chat_message}`;
-                    this.routeResponse(source, chat_message);
-                }
+                // NEW LOGIC ENDS HERE
 
                 let execute_res = await executeCommand(this, res);
 

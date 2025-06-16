@@ -16,10 +16,17 @@ const sttListenCommand = {
       return "STT is already listening.";
     }
 
-    startListening((transcribedText) => {
+    startListening(async (transcribedText) => {
       if (agentInstance && typeof agentInstance.handleMessage === 'function') {
-        // Simulate the player sending the transcribed text as a chat message
-        agentInstance.handleMessage('player', transcribedText);
+        agentInstance.isProcessingSTT = true;
+        try {
+          // Simulate the player sending the transcribed text as a chat message
+          await agentInstance.handleMessage('player', transcribedText);
+        } catch (error) {
+          console.error("Error processing transcribed text in sttListenCommand:", error);
+        } finally {
+          agentInstance.isProcessingSTT = false;
+        }
       } else {
         console.error("Agent instance or handleMessage function is not available in sttListenCommand callback.");
         // Fallback or error handling if agentInstance.handleMessage is not available
