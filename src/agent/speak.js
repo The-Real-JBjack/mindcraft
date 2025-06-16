@@ -24,11 +24,11 @@ function processQueue() {
   let command;
 
   if (isWin) {
-    command = `powershell -Command "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 2; $s.Speak(\\"${textToSpeak}\\"); $s.Dispose()"`;
+    command = `powershell -Command "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 3; $s.Speak(\\"${textToSpeak}\\"); $s.Dispose()"`;
   } else if (isMac) {
-    command = `say "${textToSpeak}"`;
+    command = `say -r 250 "${textToSpeak}"`;
   } else {
-    command = `espeak "${textToSpeak}"`;
+    command = `espeak -s 190 "${textToSpeak}"`;
   }
 
   exec(command, (error, stdout, stderr) => {

@@ -1,6 +1,7 @@
 # Mindcraft 🧠⛏️
 
 Crafting minds for Minecraft with LLMs and [Mineflayer!](https://prismarinejs.github.io/mineflayer/#/)
+Recent enhancements include faster Text-to-Speech (TTS) output and new Speech-to-Text (STT) capabilities for voice commands.
 
 [FAQ](https://github.com/kolbytn/mindcraft/blob/main/FAQ.md) | [Discord Support](https://discord.gg/mp73p35dzC) | [Video Tutorial](https://www.youtube.com/watch?v=gRotoL8P8D8) | [Blog Post](https://kolbynottingham.com/mindcraft/) | [Contributor TODO](https://github.com/users/kolbytn/projects/1) | [Paper Website](https://mindcraft-minecollab.github.io/index.html) | [MineCollab](https://github.com/kolbytn/mindcraft/blob/main/minecollab.md) 
 
@@ -67,6 +68,49 @@ You can configure the agent's name, model, and prompts in their profile like `an
 
 If you use Ollama, to install the models used by default (generation and embedding), execute the following terminal command:
 `ollama pull llama3.1 && ollama pull nomic-embed-text`
+
+## Speech-to-Text (STT) / Voice Commands
+
+Mindcraft now supports Speech-to-Text (STT), allowing you to issue commands to your bot using your voice.
+
+### Configuration
+
+To use STT, you'll need to configure it in `settings.js`:
+
+```javascript
+// settings.js
+// ... other settings ...
+stt: {
+    enabled: false, // Set to true to enable STT
+    provider: 'google', // Currently a placeholder for future expansion (e.g., 'google', 'whisper')
+    apiKeyPath: process.env.STT_API_KEY_PATH || 'path/to/your/stt-api-key.json', // Path to your STT service API key file
+    languageCode: 'en-US' // Language code for STT (e.g., 'en-US', 'es-ES')
+},
+// ... rest of settings ...
+```
+
+-   `stt.enabled` (boolean): Set to `true` to enable STT. Defaults to `false`.
+-   `stt.provider` (string): Specifies the STT provider. This is for future expansion and currently does not change STT engine behavior.
+-   `stt.apiKeyPath` (string): The path to your STT service API key JSON file.
+    -   **Important**: You need to provide a valid API key file for the STT service you intend to use (the specific service integration is still pending).
+    -   Update your `keys.json` file by copying from `keys.example.json` and adding your actual key path, or set the `STT_API_KEY_PATH` environment variable:
+        ```json
+        // keys.json
+        {
+          // ... existing keys ...
+          "STT_API_KEY_PATH": "actual/path/to/your/stt-api-key.json"
+        }
+        ```
+-   `stt.languageCode` (string): The language code for speech recognition (e.g., "en-US", "fr-FR").
+
+### Usage
+
+Once configured and enabled, you can control STT using the following chat commands:
+
+-   `!sttListen`: Type this command in chat to make the bot start listening for voice input. The transcribed text will be processed as if you typed it.
+-   `!sttStop`: Type this command to make the bot stop listening.
+
+The actual STT processing (e.g., which cloud service is used) will depend on the specific STT implementation details added to `src/agent/stt.js`.
 
 ### Online Servers
 To connect to online servers your bot will need an official Microsoft/Minecraft account. You can use your own personal one, but will need another account if you want to connect too and play with it. To connect, change these lines in `settings.js`:
