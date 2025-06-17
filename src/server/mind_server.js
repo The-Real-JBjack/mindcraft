@@ -10,6 +10,8 @@ let server;
 const registeredAgents = new Set();
 const inGameAgents = {};
 const agentManagers = {}; // socket for main process that registers/controls agents
+const activeMessageClaims = new Map(); // messageId -> { botName, timestamp, originalUser, originalMessage }
+const CLAIM_TIMEOUT = 30 * 1000; // 30 seconds for a claim to be considered valid then cleared
 
 // Initialize the server
 export function createMindServer(port = 8080) {
@@ -128,6 +130,52 @@ export function createMindServer(port = 8080) {
 				console.error('Error: ', error);
 			}
 		});
+
+        socket.on('claim_response', ({ messageId, botName, originalUser, originalMessage, isMention }) => {
+            if (!messageId || !botName) {
+                console.warn(`MindServer: Received invalid claim_response data from ${botName || 'unknown agent'}.`);
+                return;
+            }
+
+            // Log reception for debugging
+            // console.log(`MindServer: Received claim_response for messageId '${messageId}' from '${botName}'. isMention: ${isMention}`);
+
+            if (activeMessageClaims.has(messageId)) {
+                const existingClaim = activeMessageClaims.get(messageId);
+                console.log(`MindServer: MessageId '${messageId}' already claimed by '${existingClaim.botName}'. New claim from '${botName}' ignored.`);
+                // Optionally, inform the claiming bot that it was too late.
+                // socket.emit('claim_rejected', { messageId, reason: 'Already claimed' });
+                return;
+            }
+
+            // If 'isMention' is true, it could potentially override a non-mention claim if timings were absolutely identical.
+            // However, with network latency, the first one to arrive usually wins.
+            // For simplicity, first valid claim wins. Priority for mentions is primarily handled by agents sending their claims faster.
+
+            console.log(`MindServer: MessageId '${messageId}' claimed by '${botName}'. Broadcasting 'response_claimed'.`);
+            activeMessageClaims.set(messageId, {
+                botName,
+                timestamp: Date.now(),
+                originalUser, // Store these to send back
+                originalMessage
+            });
+
+            // Broadcast to all connected clients (all agents)
+            io.emit('response_claimed', {
+                messageId,
+                respondingBotName: botName,
+                originalUser, // Send back the original context
+                originalMessage
+            });
+
+            // Set a timeout to clear the claim to prevent memory leaks for messages that might not get cleared by agent logic
+            setTimeout(() => {
+                if (activeMessageClaims.has(messageId) && activeMessageClaims.get(messageId).botName === botName) {
+                    activeMessageClaims.delete(messageId);
+                    // console.log(`MindServer: Cleared claim for messageId '${messageId}' after timeout.`);
+                }
+            }, CLAIM_TIMEOUT);
+        });
     });
 
     server.listen(port, 'localhost', () => {

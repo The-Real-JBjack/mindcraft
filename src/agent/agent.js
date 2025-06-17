@@ -9,6 +9,7 @@ import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
 import { SelfPrompter } from './self_prompter.js';
+import responseCoordinator from './response_coordinator.js';
 import convoManager from './conversation.js';
 import { handleTranslation, handleEnglishTranslation } from '../utils/translator.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
@@ -43,6 +44,7 @@ export class Agent {
         this.memory_bank = new MemoryBank();
         console.log('Initializing self prompter...');
         this.self_prompter = new SelfPrompter(this);
+        responseCoordinator.init(this); // Initialize the coordinator with the current agent instance
         convoManager.initAgent(this);
         console.log('Initializing examples...');
         await this.prompter.initExamples();
@@ -135,33 +137,64 @@ export class Agent {
             "Gamerule "
         ];
         
-        const respondFunc = async (username, message) => {
-            if (username === this.name) return;
-            if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
+        const respondFunc = async (username, message, type = null, rawMessage = null, matches = null) => { // Added type for potential differentiation
+            // Basic Filters
+            if (username === this.name) return; // Message from self
+            if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return; // Not in allowed list
+            if (ignore_messages.some((m) => message.startsWith(m))) return; // System/ignored messages
+
+            this.shut_up = false;
+            // console.log(this.name, 'received message from', username, ':', message, type ? `(type: ${type})` : '');
+
             try {
-                if (ignore_messages.some((m) => message.startsWith(m))) return;
+                // Translate the message once, early on.
+                let translatedMessage = await handleEnglishTranslation(message);
 
-                this.shut_up = false;
-
-                console.log(this.name, 'received message from', username, ':', message);
+                // Add to history for ALL bots that hear this message and pass initial filters.
+                // This includes messages from other bots (if not ignored earlier) and users.
+                if (username !== this.name) { // Avoid adding self-spoken messages if they echo back
+                    console.log(`${this.name}: Adding to history from ${username}: ${translatedMessage.substring(0,100)}`);
+                    await this.history.add(username, translatedMessage); // Use await if history.add can be async
+                    this.history.save(); // Save immediately
+                }
 
                 if (convoManager.isOtherAgent(username)) {
-                    console.warn('received whisper from other bot??')
-                }
-                else {
-                    let translation = await handleEnglishTranslation(message);
-                    this.handleMessage(username, translation);
+                    // Message FROM another bot.
+                    // History is already added above. Now just process it.
+                    console.log(`${this.name}: Message from other agent ${username}. Processing further via handleMessage.`);
+                    this.handleMessage(username, translatedMessage); // Let it process (e.g., for LLM to see)
+                } else {
+                    // Message is from a USER (not self, not another known bot)
+                    // History is already added above.
+                    const eventSource = (type === 'chat_event') ? 'chat' : 'whisper';
+
+                    if (eventSource === 'chat') { // Public chat message from a user
+                        console.log(`${this.name}: Public chat from user '${username}'. Forwarding to ResponseCoordinator.`);
+                        responseCoordinator.coordinateResponse(this, username, translatedMessage); // Pass translated
+                    } else { // Whisper from a user (or any other case not covered)
+                        console.log(`${this.name}: Direct message (type: ${type}) from user '${username}'. Handling directly.`);
+                        this.handleMessage(username, translatedMessage); // User whisper handled directly
+                    }
                 }
             } catch (error) {
-                console.error('Error handling message:', error);
+                console.error(`${this.name}: Error in respondFunc for message from ${username}:`, error);
             }
-        }
+        };
 
 		this.respondFunc = respondFunc;
 
-        this.bot.on('whisper', respondFunc);
-        if (settings.profiles.length === 1)
-            this.bot.on('chat', respondFunc);
+        // For chat: (username, message, translate, rawMessage, matches)
+        this.bot.on('chat', (username, message, translate, rawMessage, matches) => {
+            // `type` is not directly provided by mineflayer 'chat' event in this way.
+            // We'll pass a marker string 'chat_event' to distinguish it.
+            respondFunc(username, message, 'chat_event', rawMessage, matches);
+        });
+
+        // For whisper: (username, message, type, rawMessage, matches)
+        // Mineflayer's 'whisper' type argument is actually the vanilla message type string like 'whisper' or 'msg'.
+        this.bot.on('whisper', (username, message, type, rawMessage, matches) => {
+            respondFunc(username, message, type, rawMessage, matches); // type here is 'whisper' or 'msg'
+        });
 
         // Set up auto-eat
         this.bot.autoEat.options = {
@@ -268,9 +301,27 @@ export class Agent {
         if (from_other_bot)
             this.last_sender = source;
 
-        // Now translate the message
-        message = await handleEnglishTranslation(message);
-        console.log('received message from', source, ':', message);
+        // If the message is from 'system', it's likely not gone through respondFunc's history add.
+        // Or, if it's a special case where history wasn't added before calling handleMessage.
+        // For regular user/bot messages via respondFunc, history is already added.
+        // Let's add a check: if source is 'system', it should add to history here.
+        // For other sources, history is presumed to be added by respondFunc.
+        if (source === 'system') {
+            // System messages are already translated or don't need translation.
+            // Also, they are not added to history in respondFunc.
+            await this.history.add(source, message); // Add system messages to history here
+            this.history.save();
+        } else {
+            // For messages from users/other bots, history.add was done in respondFunc.
+            // Message should already be translated if it came via respondFunc.
+            // However, handleMessage can be called from other places too.
+            // To be safe, let's ensure translation if not 'system' source.
+            // This is a bit tricky because we don't want to re-translate if already done.
+            // The `message` argument here *should* be the translated one from respondFunc.
+            // Let's assume for now that if source is not 'system', 'message' is already translated.
+        }
+
+        console.log(`${this.name}: handleMessage processing for '${source}'. Message: "${message.substring(0,100)}"`);
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
@@ -281,21 +332,22 @@ export class Agent {
                 behavior_log = '...' + behavior_log.substring(behavior_log.length - MAX_LOG);
             }
             behavior_log = 'Recent behaviors log: \n' + behavior_log;
-            await this.history.add('system', behavior_log);
+            await this.history.add('system', behavior_log); // This is a system message, so it's fine.
         }
 
-        // Handle other user messages
-        await this.history.add(source, message);
-        this.history.save();
+        // History for the incoming message (source, message) should have been added in respondFunc for non-system.
+        // Or just above for system messages.
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
+
+        // Main loop for LLM interaction / command execution
         for (let i=0; i<max_responses; i++) {
             if (checkInterrupt()) break;
-            let history = this.history.getHistory();
-            let res = await this.prompter.promptConvo(history);
+            let current_history = this.history.getHistory(); // Get the latest history
+            let res = await this.prompter.promptConvo(current_history);
 
-            console.log(`${this.name} full response to ${source}: ""${res}""`);
+            console.log(`${this.name} full response to ${source}: ""${res.substring(0,100)}""`);
 
             if (res.trim().length === 0) {
                 console.warn('no response')
