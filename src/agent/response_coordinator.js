@@ -83,15 +83,34 @@ class ResponseCoordinator {
             return;
         }
 
+        // --- Start Enhanced Debugging & Type Checking ---
+        let payloadOriginalUser = String(originalUser);
+        let payloadOriginalMessage = String(originalMessage);
+        let payloadMessageId = String(messageId);
+        let payloadBotName = String(this.agent.name);
+        let payloadIsMention = Boolean(isMention);
+
+        console.log(`${this.agent.name}: Preparing 'claim_response'. Data types:`);
+        console.log(`  - messageId (${payloadMessageId.length}): ${typeof payloadMessageId}`);
+        console.log(`  - botName (${payloadBotName.length}): ${typeof payloadBotName}`);
+        console.log(`  - originalUser (${payloadOriginalUser.length}): ${typeof payloadOriginalUser}`);
+        console.log(`  - originalMessage (${payloadOriginalMessage.length}): ${typeof payloadOriginalMessage}`);
+        console.log(`  - isMention: ${typeof payloadIsMention}`);
+
+        const claimPayload = {
+            messageId: payloadMessageId,
+            botName: payloadBotName,
+            originalUser: payloadOriginalUser,
+            originalMessage: payloadOriginalMessage,
+            isMention: payloadIsMention
+        };
+
+        console.log(`${this.agent.name}: Assembled claim_response payload:`, JSON.stringify(claimPayload, null, 2));
+        // --- End Enhanced Debugging & Type Checking ---
+
         if (serverProxy && serverProxy.socket) {
             console.log(`${this.agent.name}: Emitting 'claim_response' for messageId: ${messageId}`);
-            serverProxy.socket.emit('claim_response', {
-                messageId: messageId, // This ID will be used by the server
-                botName: this.agent.name,
-                originalUser: originalUser,
-                originalMessage: originalMessage,
-                isMention: isMention // Server might use this for priority
-            });
+            serverProxy.socket.emit('claim_response', claimPayload);
         } else {
             console.error(`${this.agent.name}: Cannot emit 'claim_response', serverProxy.socket not available.`);
             // Fallback: if no server, and it's a mention, just handle it (for single player/testing)
