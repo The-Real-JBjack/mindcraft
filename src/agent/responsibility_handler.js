@@ -87,16 +87,21 @@ ${actionPrompt}`);
                 } else {
                     llmDecisionStr = "ACTION: FORCE_RESPOND\nRESPONSE: Okay, I am now handling this forced message.";
                 }
-            } else { // Not forced
-                if (this.agent.prompter && typeof this.agent.prompter.promptConvo === 'function') { // Check prompter for non-forced
-                    if (peerBots.length > 0 && Math.random() < 0.5) { // 50% chance to pass if peers exist
-                        llmDecisionStr = `ACTION: PASS to ${peerBots[0]}`; // This one is already a single line
-                    } else {
-                        llmDecisionStr = "ACTION: RESPOND\nRESPONSE: I will respond to this message.";
+            } else { // Not forced (initial interaction with the user by this agent)
+                if (this.agent.prompter && typeof this.agent.prompter.promptConvo === 'function') {
+                    if (peerBots.length > 0 && Math.random() < 0.3) { // ~30% chance to also pass to a peer
+                        llmDecisionStr = `ACTION: RESPOND_AND_PASS to ${peerBots[0]}\nRESPONSE: I'll handle that and let ${peerBots[0]} know.`;
+                    } else { // ~70% chance to just respond
+                        llmDecisionStr = "ACTION: RESPOND\nRESPONSE: I'm on it!";
                     }
                 } else {
                     console.error(`${this.agent.name}: Agent prompter not available or promptConvo not suitable for decision making. Defaulting non-forced to RESPOND.`);
-                    llmDecisionStr = "ACTION: RESPOND\nRESPONSE: (Prompter Error) I will respond.";
+                    // Fallback if prompter isn't available
+                    if (peerBots.length > 0 && Math.random() < 0.3) {
+                         llmDecisionStr = `ACTION: RESPOND_AND_PASS to ${peerBots[0]}\nRESPONSE: (Prompter Error) I will take care of this and inform ${peerBots[0]}.`;
+                    } else {
+                        llmDecisionStr = "ACTION: RESPOND\nRESPONSE: (Prompter Error) I will respond to this.";
+                    }
                 }
             }
             // Fallback if LLM (even placeholder) somehow produced nothing:
