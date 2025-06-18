@@ -65,7 +65,7 @@ ${JSON.stringify(fullHistory.slice(-5), null, 2)}
         actionPrompt += `
 Your decision (must start with ACTION: followed by one of the keywords like RESPOND, PASS to ..., etc.):`;
 
-        // console.log(`${this.agent.name}: Sending prompt to LLM for decision:
+        console.log(`${this.agent.name}: Sending prompt to LLM for decision:
 ${actionPrompt}`);
         let llmDecisionStr = '';
         try {
@@ -83,43 +83,36 @@ ${actionPrompt}`);
                 // If forced, primary action should be FORCE_RESPOND.
                 // Allow simulated FORCE_PASS only if peers exist and for demonstration.
                 if (peerBots.length > 0 && Math.random() < 0.25) { // Lower chance to FORCE_PASS for simulation
-                    llmDecisionStr = `ACTION: FORCE_PASS to ${peerBots[0]}
-COMMENT: Simulated forced pass.`;
+                    llmDecisionStr = `ACTION: FORCE_PASS to ${peerBots[0]}\nCOMMENT: Simulated forced pass.`;
                 } else {
-                    llmDecisionStr = "ACTION: FORCE_RESPOND
-RESPONSE: Okay, I am now handling this forced message.";
+                    llmDecisionStr = "ACTION: FORCE_RESPOND\nRESPONSE: Okay, I am now handling this forced message.";
                 }
             } else { // Not forced
                 if (this.agent.prompter && typeof this.agent.prompter.promptConvo === 'function') { // Check prompter for non-forced
                     if (peerBots.length > 0 && Math.random() < 0.5) { // 50% chance to pass if peers exist
-                        llmDecisionStr = `ACTION: PASS to ${peerBots[0]}`;
+                        llmDecisionStr = `ACTION: PASS to ${peerBots[0]}`; // This one is already a single line
                     } else {
-                        llmDecisionStr = "ACTION: RESPOND
-RESPONSE: I will respond to this message.";
+                        llmDecisionStr = "ACTION: RESPOND\nRESPONSE: I will respond to this message.";
                     }
                 } else {
                     console.error(`${this.agent.name}: Agent prompter not available or promptConvo not suitable for decision making. Defaulting non-forced to RESPOND.`);
-                    llmDecisionStr = "ACTION: RESPOND
-RESPONSE: (Prompter Error) I will respond.";
+                    llmDecisionStr = "ACTION: RESPOND\nRESPONSE: (Prompter Error) I will respond.";
                 }
             }
             // Fallback if LLM (even placeholder) somehow produced nothing:
             if (!llmDecisionStr) {
                 console.error(`${this.agent.name}: LLM decision string was empty. Defaulting.`);
                 if (isForced) {
-                    llmDecisionStr = "ACTION: FORCE_RESPOND
-RESPONSE: Defaulting to forced response due to empty LLM output.";
+                    llmDecisionStr = "ACTION: FORCE_RESPOND\nRESPONSE: Defaulting to forced response due to empty LLM output.";
                 } else {
-                    llmDecisionStr = "ACTION: RESPOND
-RESPONSE: Defaulting to response due to empty LLM output.";
+                    llmDecisionStr = "ACTION: RESPOND\nRESPONSE: Defaulting to response due to empty LLM output.";
                 }
             }
 
             console.log(`${this.agent.name}: LLM decision received: "${llmDecisionStr}"`);
         } catch (error) {
             console.error(`${this.agent.name}: Error calling LLM for decision:`, error);
-            llmDecisionStr = "ACTION: RESPOND
-RESPONSE: (Error during LLM decision) I will respond to this."; // Fallback
+            llmDecisionStr = "ACTION: RESPOND\nRESPONSE: (Error during LLM decision) I will respond to this."; // Fallback
         }
 
         // Parse LLM decision
