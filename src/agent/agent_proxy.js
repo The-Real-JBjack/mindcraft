@@ -13,8 +13,9 @@ class AgentServerProxy {
         this.agentName = null; // Store agent's name
 
         // Callbacks to be set by the agent instance
-        this.handleRestartAgent = () => { console.warn('handleRestartAgent not implemented by agent'); };
-        this.handleReceiveMessage = (username, message) => { console.warn('handleReceiveMessage not implemented by agent', username, message); };
+        this.handleRestartAgent = () => { console.warn(`${this.agentName || 'Agent'}: handleRestartAgent not implemented by agent`); };
+        this.handleReceiveMessage = (username, message) => { console.warn(`${this.agentName || 'Agent'}: handleReceiveMessage not implemented by agent`, username, message); };
+        this.handlePassResponsibility = (fromAgentName, messageDetails) => { console.warn(`${this.agentName || 'Agent'}: handlePassResponsibility not implemented by agent. From: ${fromAgentName}`, messageDetails); };
         // Add other callbacks as needed for other events that interact with the agent
 
         AgentServerProxy.instance = this;
@@ -38,9 +39,30 @@ class AgentServerProxy {
 
         if (typeof agentInstance.respondFunc === 'function') {
             // We need to ensure respondFunc is called with the agent's context if it uses 'this'
-            this.handleReceiveMessage = (username, message) => agentInstance.respondFunc(username, message, 'server_sent_message'); // Pass a type
+            this.handleReceiveMessage = (username, message) => agentInstance.respondFunc(username, message, 'server_sent_message'); // Pass a type for server sent messages
         } else {
             console.error(`AgentServerProxy: agentInstance for ${this.agentName} does not have respondFunc method.`);
+        }
+
+        if (agentInstance.responsibilityHandler && typeof agentInstance.responsibilityHandler.decideAndAct === 'function') {
+            // Bind 'this' context for decideAndAct to the responsibilityHandler instance isn't strictly needed here
+            // as we are calling it on agentInstance.responsibilityHandler.
+            this.handlePassResponsibility = (fromAgentName, details) => {
+                const isNowForced = (agentInstance.name === details.initialReceiverName);
+                if (isNowForced) {
+                    console.log(`Agent ${agentInstance.name}: Responsibility passed back to me (from ${fromAgentName}), and I was the initial receiver. This is a FORCED decision.`);
+                }
+                agentInstance.responsibilityHandler.decideAndAct({
+                    messageId: details.originalMessageId,
+                    username: details.username,
+                    message: details.message,
+                    fullHistory: details.fullHistory,
+                    isForced: isNowForced,
+                    initialReceiverName: details.initialReceiverName
+                });
+            };
+        } else {
+            console.error(`AgentServerProxy: agentInstance for ${this.agentName} does not have a valid responsibilityHandler.decideAndAct method.`);
         }
 
         this.socket = io(`http://${settings.mindserver_host}:${settings.mindserver_port}`);
@@ -60,8 +82,14 @@ class AgentServerProxy {
         });
 
         // convoManager is global/singleton, so it can be used directly here
-        this.socket.on('chat-message', (receivedAgentName, json) => {
-            convoManager.receiveFromBot(receivedAgentName, json);
+        this.socket.on('chat-message', (fromAgentName, jsonPayload) => {
+            if (jsonPayload && jsonPayload.type === "PASS_RESPONSIBILITY") {
+                console.log(`Agent ${this.agentName}: Received PASS_RESPONSIBILITY from ${fromAgentName}.`);
+                this.handlePassResponsibility(fromAgentName, jsonPayload.messageDetails);
+            } else {
+                // Existing logic for regular bot-to-bot messages via convoManager
+                convoManager.receiveFromBot(fromAgentName, jsonPayload);
+            }
         });
 
         this.socket.on('agents-update', (agents) => {

@@ -1,154 +1,106 @@
-import crypto from 'crypto';
-import { serverProxy } from './agent_proxy.js'; // Assuming agent_proxy will be used for socket communication
+import convoManager from './conversation.js'; // To get the list of active agents
 
-// Store message IDs that are currently being processed for a response claim
-const processingMessageIds = new Set();
-// Store message IDs that have already been responded to, to prevent re-processing
-const respondedMessageIds = new Set();
-// Timeout for clearing message IDs from sets (e.g., 5 minutes)
-const MESSAGE_ID_TIMEOUT = 5 * 60 * 1000;
-
-function generateMessageId(username, message) {
-    const hash = crypto.createHash('sha256');
-    hash.update(username + message + Date.now()); // Add timestamp for more uniqueness if needed
-    return hash.digest('hex');
-}
+let currentAssigneeIndex = 0;
 
 class ResponseCoordinator {
     constructor() {
         this.agent = null; // Will be set by the agent using this coordinator
-        this.activeClaims = new Map(); // Stores messageId -> { botName, timestamp } for active claims
+        // No longer need claim-related properties: activeClaims, processingMessageIds, respondedMessageIds
     }
 
     init(agent) {
         this.agent = agent;
-        // Listen for claim confirmations from the server
-        if (serverProxy && serverProxy.socket) {
-            serverProxy.socket.on('response_claimed', ({ messageId, respondingBotName, originalUser, originalMessage }) => {
-                this.handleResponseClaimed(messageId, respondingBotName, originalUser, originalMessage);
-            });
-        } else {
-            console.warn(`${this.agent?.name}: ResponseCoordinator could not attach listener to serverProxy.socket`);
+        // No longer need to listen for 'response_claimed' from serverProxy for this new logic
+        // Ensure serverProxy.socket listeners from previous versions are cleared if any were set by old coordinator logic,
+        // although replacing the file content handles this.
+        if (this.agent.serverProxy && this.agent.serverProxy.socket) {
+             this.agent.serverProxy.socket.off('response_claimed'); // Explicitly remove old listener if it might exist
         }
+        console.log(`${this.agent.name}: ResponseCoordinator initialized for initial assignment logic.`);
     }
 
-    async coordinateResponse(username, message) {
+    /**
+     * Determines which agent is initially responsible for a message and
+     * triggers the responsibility handler for that agent.
+     * @param {string} username - The user who sent the message.
+     * @param {string} message - The translated message content.
+     * @param {object} originalMessageDetails - Contains { originalUser, originalMessageContent, messageId } if needed later.
+     */
+    assignInitialResponsibility(username, message, originalMessageDetails = {}) {
         if (!this.agent) {
             console.error("ResponseCoordinator not initialized with an agent.");
             return;
         }
 
-        const simpleMessageId = generateMessageId(username, message); // More for local tracking before server ack
-
-        // Avoid reprocessing if already handled or currently being handled by this agent locally
-        if (respondedMessageIds.has(simpleMessageId) || processingMessageIds.has(simpleMessageId)) {
-            // console.log(`${this.agent.name}: Message ${simpleMessageId} already processed or being processed.`);
-            return;
-        }
-
-        console.log(`${this.agent.name} coordinating response for: ${username}: ${message}`);
-        processingMessageIds.add(simpleMessageId);
-        setTimeout(() => processingMessageIds.delete(simpleMessageId), MESSAGE_ID_TIMEOUT);
-
-
-        // 1. Check for Self-Mention
-        if (message.toLowerCase().includes(this.agent.name.toLowerCase())) {
-            console.log(`${this.agent.name}: Self-mentioned, attempting to claim response for message ID ${simpleMessageId}`);
-            this.attemptClaim(simpleMessageId, username, message, true); // true for high priority
-            return;
-        }
-
-        // 2. No Mention - Random Selection Protocol
-        const randomDelay = Math.floor(Math.random() * 1500) + 200; // 200-1700ms delay
-        console.log(`${this.agent.name}: No mention detected. Waiting ${randomDelay}ms to claim message ID ${simpleMessageId}`);
-
-        setTimeout(() => {
-            // Check again if the message has been claimed by another bot in the meantime
-            // This check will be more robust once server-side 'response_claimed' is fully integrated
-            if (respondedMessageIds.has(simpleMessageId)) {
-                // console.log(`${this.agent.name}: Message ${simpleMessageId} was claimed by another bot during delay.`);
-                processingMessageIds.delete(simpleMessageId); // Clean up
-                return;
+        const activeAgents = convoManager.getInGameAgents();
+        if (!activeAgents || activeAgents.length === 0) {
+            console.warn(`${this.agent.name}: No active agents found to assign responsibility. Handling message directly.`);
+            // Fallback: if no other agents, this agent handles it.
+            // This will call the new ResponsibilityHandler, which needs to be created in the next step.
+            if (this.agent.responsibilityHandler) {
+                this.agent.responsibilityHandler.decideAndAct({
+                    messageId: originalMessageDetails.messageId || Date.now().toString(), // Simple messageId
+                    username: username,
+                    message: message,
+                    fullHistory: this.agent.history.getHistory(), // Pass current history
+                    isForced: false, // Not forced initially
+                    initialReceiverName: this.agent.name // It's the initial receiver
+                });
+            } else {
+                 console.error(`${this.agent.name}: ResponsibilityHandler not found on agent.`);
+                 // Fallback to old direct handling if responsibility handler isn't there yet
+                 // This line should eventually be removed once ResponsibilityHandler is integrated:
+                 this.agent.handleMessage(username, message);
             }
-            console.log(`${this.agent.name}: Attempting to claim response for message ID ${simpleMessageId} after delay.`);
-            this.attemptClaim(simpleMessageId, username, message, false); // false for normal priority
-        }, randomDelay);
-    }
-
-    attemptClaim(messageId, originalUser, originalMessage, isMention) {
-        // Check if another bot has already been confirmed for this messageId (by server)
-        if (respondedMessageIds.has(messageId)) {
-            // console.log(`${this.agent.name}: Claim aborted for ${messageId}, already responded by another bot.`);
-            processingMessageIds.delete(messageId);
             return;
         }
 
-        // --- Start Enhanced Debugging & Type Checking ---
-        let payloadOriginalUser = String(originalUser);
-        let payloadOriginalMessage = String(originalMessage);
-        let payloadMessageId = String(messageId);
-        let payloadBotName = String(this.agent.name);
-        let payloadIsMention = Boolean(isMention);
+        // Sort agent names to ensure consistent order for round-robin
+        const sortedAgentNames = [...activeAgents].sort();
 
-        console.log(`${this.agent.name}: Preparing 'claim_response'. Data types:`);
-        console.log(`  - messageId (${payloadMessageId.length}): ${typeof payloadMessageId}`);
-        console.log(`  - botName (${payloadBotName.length}): ${typeof payloadBotName}`);
-        console.log(`  - originalUser (${payloadOriginalUser.length}): ${typeof payloadOriginalUser}`);
-        console.log(`  - originalMessage (${payloadOriginalMessage.length}): ${typeof payloadOriginalMessage}`);
-        console.log(`  - isMention: ${typeof payloadIsMention}`);
+        if (currentAssigneeIndex >= sortedAgentNames.length) {
+            currentAssigneeIndex = 0; // Reset index
+        }
 
-        const claimPayload = {
-            messageId: payloadMessageId,
-            botName: payloadBotName,
-            originalUser: payloadOriginalUser,
-            originalMessage: payloadOriginalMessage,
-            isMention: payloadIsMention
-        };
+        const assignedBotName = sortedAgentNames[currentAssigneeIndex];
+        currentAssigneeIndex = (currentAssigneeIndex + 1) % sortedAgentNames.length; // Increment for next time
 
-        console.log(`${this.agent.name}: Assembled claim_response payload:`, JSON.stringify(claimPayload, null, 2));
-        // --- End Enhanced Debugging & Type Checking ---
+        console.log(`${this.agent.name}: User message from '${username}'. Initial responsibility assigned to: '${assignedBotName}'. My name: ${this.agent.name}`);
 
-        if (serverProxy && serverProxy.socket) {
-            console.log(`${this.agent.name}: Emitting 'claim_response' for messageId: ${messageId}`);
-            serverProxy.socket.emit('claim_response', claimPayload);
-        } else {
-            console.error(`${this.agent.name}: Cannot emit 'claim_response', serverProxy.socket not available.`);
-            // Fallback: if no server, and it's a mention, just handle it (for single player/testing)
-            // This part might be removed if server is always required
-            if (isMention) {
-                 console.warn(`${this.agent.name}: No server connection, handling mentioned message locally.`);
-                 this.agent.handleMessage(originalUser, originalMessage);
-                 respondedMessageIds.add(messageId);
-                 setTimeout(() => respondedMessageIds.delete(messageId), MESSAGE_ID_TIMEOUT);
+        if (this.agent.name === assignedBotName) {
+            console.log(`${this.agent.name}: I am the initial receiver for message from '${username}'. Triggering ResponsibilityHandler.`);
+            // This agent is chosen. It will proceed to use its ResponsibilityHandler.
+            // The ResponsibilityHandler module will be created in the next step.
+            // For now, we can log or call a placeholder.
+            if (this.agent.responsibilityHandler) {
+                 this.agent.responsibilityHandler.decideAndAct({
+                    messageId: originalMessageDetails.messageId || Date.now().toString(),
+                    username: username,
+                    message: message,
+                    fullHistory: this.agent.history.getHistory(),
+                    isForced: false,
+                    initialReceiverName: this.agent.name
+                });
+            } else {
+                console.error(`${this.agent.name}: ResponsibilityHandler not found on agent. Message for ${assignedBotName} will be handled by its own instance.`);
+                // If this agent is the assigned one, but the handler isn't wired yet,
+                // it would eventually call handleMessage. For now, this log suffices because
+                // the actual call will happen on the *instance* of the assigned bot.
             }
-            processingMessageIds.delete(messageId);
-        }
-    }
-
-    handleResponseClaimed(messageId, respondingBotName, originalUser, originalMessage) {
-        console.log(`${this.agent.name}: Received 'response_claimed'. MessageId: ${messageId}, Responder: ${respondingBotName}`);
-        // Add to respondedMessageIds to prevent any further local attempts or processing for this message
-        respondedMessageIds.add(messageId);
-        setTimeout(() => respondedMessageIds.delete(messageId), MESSAGE_ID_TIMEOUT);
-        processingMessageIds.delete(messageId); // Also clear from processing
-
-        if (respondingBotName === this.agent.name) {
-            console.log(`${this.agent.name}: Confirmed to respond to messageId: ${messageId}`);
-            // Ensure originalUser and originalMessage are correctly passed
-            this.agent.handleMessage(originalUser, originalMessage);
         } else {
-            console.log(`${this.agent.name}: Bot ${respondingBotName} is responding to messageId: ${messageId}. Standing down.`);
+            // This agent is not chosen. It will do nothing further unless responsibility is passed to it.
+            console.log(`${this.agent.name}: I am not the initial receiver. '${assignedBotName}' will handle initially.`);
         }
     }
 
-    // Call this if a message is handled through other means (e.g. direct whisper)
-    markAsResponded(username, message) {
-        const messageId = generateMessageId(username, message);
-        respondedMessageIds.add(messageId);
-        setTimeout(() => respondedMessageIds.delete(messageId), MESSAGE_ID_TIMEOUT);
-    }
+    // Remove old methods related to claim-based coordination:
+    // attemptClaim, handleResponseClaimed, generateMessageId (if only for claims), markAsResponded (if only for claims)
 }
 
-// Export a single instance
-const responseCoordinator = new ResponseCoordinator();
-export default responseCoordinator;
+// Export a single instance. Each agent will have its own instance of this.
+// No, this should not be a singleton if each agent news `this.agent`.
+// The previous implementation was `export default responseCoordinator = new ResponseCoordinator()`
+// which made it a singleton. This needs to change if `this.agent` is to be specific.
+// Let's make it a class that agent.js instantiates.
+
+export default ResponseCoordinator; // Changed from singleton export

@@ -9,7 +9,8 @@ import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
 import { SelfPrompter } from './self_prompter.js';
-import responseCoordinator from './response_coordinator.js';
+import ResponseCoordinator from './response_coordinator.js'; // Import class
+import ResponsibilityHandler from './responsibility_handler.js'; // Import class
 import convoManager from './conversation.js';
 import { handleTranslation, handleEnglishTranslation } from '../utils/translator.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
@@ -44,8 +45,16 @@ export class Agent {
         this.memory_bank = new MemoryBank();
         console.log('Initializing self prompter...');
         this.self_prompter = new SelfPrompter(this);
-        responseCoordinator.init(this); // Initialize the coordinator with the current agent instance
-        convoManager.initAgent(this);
+
+        // Instantiate ResponseCoordinator (it's a class now)
+        this.responseCoordinator = new ResponseCoordinator();
+        this.responseCoordinator.init(this); // Initialize with the current agent instance
+
+        // Instantiate ResponsibilityHandler
+        this.responsibilityHandler = new ResponsibilityHandler(this);
+
+        convoManager.initAgent(this); // Keep this after or ensure dependencies are met
+
         console.log('Initializing examples...');
         await this.prompter.initExamples();
         console.log('Initializing task...');
@@ -169,8 +178,12 @@ export class Agent {
                     const eventSource = (type === 'chat_event') ? 'chat' : 'whisper';
 
                     if (eventSource === 'chat') { // Public chat message from a user
-                        console.log(`${this.name}: Public chat from user '${username}'. Forwarding to ResponseCoordinator.`);
-                        responseCoordinator.coordinateResponse(this, username, translatedMessage); // Pass translated
+                        console.log(`${this.name}: Public chat from user '${username}'. Forwarding for initial responsibility assignment.`);
+                        this.responseCoordinator.assignInitialResponsibility(username, translatedMessage, {
+                            originalUser: username, // Pass the original username
+                            originalMessageContent: message, // Pass the original, untranslated message
+                            messageId: `userMsg-${Date.now()}-${Math.random().toString(36).substring(2,7)}` // Generate a unique ID
+                        });
                     } else { // Whisper from a user (or any other case not covered)
                         console.log(`${this.name}: Direct message (type: ${type}) from user '${username}'. Handling directly.`);
                         this.handleMessage(username, translatedMessage); // User whisper handled directly
