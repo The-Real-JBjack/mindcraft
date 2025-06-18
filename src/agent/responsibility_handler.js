@@ -186,6 +186,8 @@ ${actionPrompt}`);
                 // Also add this bot's response to its own history.
                 await this.agent.history.add(this.agent.name, responseText);
                 this.agent.history.save();
+                // After initial response, process the message
+                await this.agent.handleMessage(username, message);
             } else {
                 console.warn(`${this.agent.name}: Action was RESPOND but no responseText found. Calling handleMessage as fallback.`);
                 await this.agent.handleMessage(username, message); // Fallback to full handleMessage
@@ -209,6 +211,8 @@ ${actionPrompt}`);
                 this.agent.openChat(responseText);
                 await this.agent.history.add(this.agent.name, responseText);
                 this.agent.history.save();
+                // After initial response, process the message
+                await this.agent.handleMessage(username, message);
             } else {
                 console.warn(`${this.agent.name}: Action was RESPOND_AND_PASS but no responseText. Responding via handleMessage as fallback.`);
                 await this.agent.handleMessage(username, message); // Respond part
